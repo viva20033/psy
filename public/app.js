@@ -939,6 +939,15 @@ function renderProfile(state) {
                 location.hash = "#/login";
                 state = buildDemoState();
                 renderApp();
+                // Внутри Telegram ожидаемо "выйти и сразу войти" — попробуем перелогин.
+                if (isTelegramWebApp()) {
+                  const r = await tryTelegramLogin();
+                  if (r.ok) {
+                    state = await loadState();
+                    location.hash = "#/upcoming";
+                    renderApp();
+                  }
+                }
               } catch (e) {
                 alert("Не удалось выйти. Обновите страницу.");
                 console.error(e);
