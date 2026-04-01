@@ -6,10 +6,24 @@
     <meta name="color-scheme" content="light" />
     <meta name="telegram-bot-username" content="psylkbot" />
     <title>Кабинет тренера</title>
-    <link rel="stylesheet" href="./styles.css?v=20260401" />
+    <script>
+      // Telegram/мобильные WebView часто агрессивно кешируют статику.
+      // Подмешиваем версию из query (?v=...), иначе — текущий timestamp.
+      (function () {
+        var params = new URLSearchParams(location.search || "");
+        var v = params.get("v") || String(Date.now());
+        var css = document.createElement("link");
+        css.rel = "stylesheet";
+        css.href = "./styles.css?v=" + encodeURIComponent(v);
+        document.head.appendChild(css);
+        var js = document.createElement("script");
+        js.defer = true;
+        js.src = "./app.js?v=" + encodeURIComponent(v);
+        document.head.appendChild(js);
+      })();
+    </script>
   </head>
   <body>
     <div id="app" class="app" aria-live="polite"></div>
-    <script defer src="./app.js?v=20260401"></script>
   </body>
 </html>
