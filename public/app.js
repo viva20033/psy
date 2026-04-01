@@ -209,6 +209,24 @@ function isTelegramWebApp() {
   return Boolean(window.Telegram && window.Telegram.WebApp);
 }
 
+function getBotUsername() {
+  // Можно задать в index.html: <meta name="telegram-bot-username" content="my_bot" />
+  const meta = document.querySelector('meta[name="telegram-bot-username"]');
+  const v = meta?.getAttribute("content") || "";
+  return String(v || "").trim().replace(/^@/, "");
+}
+
+function openBotInTelegram() {
+  const username = getBotUsername();
+  if (!username) {
+    alert("Не задан username бота. Добавьте meta telegram-bot-username в index.html.");
+    return;
+  }
+  const url = `https://t.me/${encodeURIComponent(username)}`;
+  // В браузере: откроет t.me, дальше пользователь нажмёт кнопку Menu / WebApp.
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 async function tryTelegramLogin() {
   if (!isTelegramWebApp()) return { ok: false, skipped: true };
   try {
@@ -216,15 +234,24 @@ async function tryTelegramLogin() {
     try {
       window.Telegram.WebApp.ready();
     } catch {}
-    const initData = window.Telegram.WebApp.initData;
+    // Иногда initData появляется не сразу — подождём немного.
+    let initData = window.Telegram.WebApp.initData;
+    if (!initData) {
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 120));
+        initData = window.Telegram.WebApp.initData;
+        if (initData) break;
+      }
+    }
     if (!initData) return { ok: false, error: "Missing initData" };
     const r = await fetch(`${API_BASE}/api/auth/telegram`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initData }),
     });
-    if (!r.ok) throw new Error(await r.text());
-    const j = await r.json();
+    const txt = await r.text();
+    if (!r.ok) throw new Error(txt);
+    const j = JSON.parse(txt);
     currentUserId = j.userId;
     return { ok: true };
   } catch (e) {
@@ -260,7 +287,12 @@ function renderLogin(stateRef) {
       location.hash = "#/upcoming";
       renderApp();
     } catch (e) {
-      alert(String(e.message || e));
+      const msg = String(e.message || e);
+      if (msg.includes("Аккаунт не найден")) {
+        alert("Этот email ещё не привязан. Откройте приложение через Telegram-бота, войдите и привяжите email в «Профиль».");
+      } else {
+        alert(msg);
+      }
     }
   };
 
@@ -268,9 +300,9 @@ function renderLogin(stateRef) {
     const r = await tryTelegramLogin();
     if (!r.ok) {
       if (String(r.error || "").includes("Missing initData")) {
-        return alert("Не вижу данных Telegram (initData). Откройте приложение именно как WebApp из бота (Menu Button / кнопка).");
+        return alert("Не вижу данных Telegram (initData). Откройте приложение именно как WebApp из бота (Menu Button / кнопка), а не как обычную страницу в встроенном браузере Telegram.");
       }
-      return alert("Не удалось войти через Telegram. Проверьте, что вы открыли WebApp из бота, и что на сервере задан TELEGRAM_BOT_TOKEN.");
+      return alert(`Не удалось войти через Telegram.\n\n${String(r.error?.message || r.error || "")}`);
     }
     state = await loadState();
     location.hash = "#/upcoming";
@@ -305,7 +337,7 @@ function renderLogin(stateRef) {
               "button",
               {
                 class: "btn",
-                onclick: () => alert("Откройте это приложение через Telegram-бота, войдите и привяжите email в «Профиль»."),
+                onclick: () => openBotInTelegram(),
               },
               "Нет привязанной почты?"
             ),

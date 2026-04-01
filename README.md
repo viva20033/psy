@@ -56,6 +56,14 @@ create table if not exists app_accounts (
 - **Привязка email**: внутри Telegram откройте `Профиль` → `Привязать email` (запрос `/api/auth/email-link`).
 - **Вход в браузере**: `/#/login` → email+пароль (`/api/auth/email-login`).
 
+## Telegram: ссылка на бота из веб-версии
+
+Чтобы кнопка `Нет привязанной почты?` открывала вашего бота в Telegram, замените в `public/index.html`:
+
+- `<meta name="telegram-bot-username" content="YOUR_BOT_USERNAME" />`
+
+на ваш username бота (без `@`).
+
 ## Локальный запуск (без npm install)
 
 ```bash
