@@ -31,7 +31,9 @@ function verifyTelegramInitData({ initData, botToken }) {
   pairs.sort();
   const dataCheckString = pairs.join("\n");
 
-  const secretKey = crypto.createHash("sha256").update(botToken).digest();
+  // Важно: для Telegram WebApp initData секретный ключ считается через HMAC_SHA256("WebAppData", botToken).
+  // (а не через sha256(botToken)).
+  const secretKey = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
   const computed = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
   const ok = computed.length === providedHash.length && crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(providedHash));
   if (!ok) return { ok: false, error: "Bad signature" };
