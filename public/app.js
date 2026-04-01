@@ -51,6 +51,7 @@ const GROUP_TYPES = [
   { id: "супервизионная", label: "Супервизионная" },
   { id: "терапевтическая", label: "Терапевтическая" },
   { id: "интервизионная", label: "Интервизионная" },
+  { id: "личная", label: "Личная консультация" },
   { id: "другое", label: "Другое" },
 ];
 
@@ -368,6 +369,17 @@ function renderLogin(stateRef) {
 
 function getMe(state) {
   return state.users.find((u) => u.id === state.meId);
+}
+
+function getMeIndex(state) {
+  return state.users.findIndex((u) => u.id === state.meId);
+}
+
+function fullNameFromProfile(p) {
+  const first = String(p?.firstName || "").trim();
+  const last = String(p?.lastName || "").trim();
+  const s = `${first} ${last}`.trim();
+  return s || null;
 }
 
 function groupById(state, id) {
@@ -872,7 +884,7 @@ function renderCreate(state) {
         h("div", { class: "small" }, "Данные сохраняются на сервере (SQLite). Сценарий: плавающие даты и время «уточним позже»."),
         h("div", { class: "actions" }, [
           h("button", { class: "btn primary", onclick: () => (location.hash = "#/wizard") }, "Запланировать встречу группы"),
-          h("button", { class: "btn", onclick: () => alert("В MVP можно добавить позже, если нужно отдельным типом.") }, "Личная консультация (позже)"),
+          h("button", { class: "btn", onclick: () => (location.hash = "#/new-consultation") }, "Личная консультация"),
         ]),
       ]),
       h("div", { class: "card" }, [
@@ -954,14 +966,112 @@ function renderNewGroup(state) {
 function renderProfile(state) {
   const me = getMe(state);
   const canLinkEmail = isTelegramWebApp() && currentUserId && String(currentUserId).startsWith("tg:");
+  const p = me?.profile || {};
+  const firstId = "p_first";
+  const lastId = "p_last";
+  const titleId = "p_title";
+  const stageId = "p_stage";
+  const tzId = "p_tz";
+  const cityId = "p_city";
+  const phoneId = "p_phone";
+  const workDaysId = "p_workdays";
+  const workHoursId = "p_workhours";
+
+  const onSaveProfile = async () => {
+    try {
+      const firstName = (document.getElementById(firstId)?.value || "").trim();
+      const lastName = (document.getElementById(lastId)?.value || "").trim();
+      const title = (document.getElementById(titleId)?.value || "").trim();
+      const stage = (document.getElementById(stageId)?.value || "").trim();
+      const tz = (document.getElementById(tzId)?.value || "").trim();
+      const city = (document.getElementById(cityId)?.value || "").trim();
+      const phone = (document.getElementById(phoneId)?.value || "").trim();
+      const workDays = (document.getElementById(workDaysId)?.value || "").trim();
+      const workHours = (document.getElementById(workHoursId)?.value || "").trim();
+
+      const idx = getMeIndex(state);
+      if (idx === -1) throw new Error("Пользователь не найден");
+
+      const nextProfile = {
+        firstName,
+        lastName,
+        title, // например: гештальт-терапевт, психолог
+        stage, // например: студент / практикующий / супервизор
+        tz, // например: Europe/Moscow
+        city,
+        phone,
+        workDays, // например: Пн,Вт,Чт
+        workHours, // например: 10:00-19:00
+      };
+
+      state.users[idx] = { ...state.users[idx], profile: nextProfile };
+
+      const nameFromProfile = fullNameFromProfile(nextProfile);
+      if (nameFromProfile) {
+        state.users[idx].name = nameFromProfile;
+      }
+
+      await saveState(state);
+      alert("Профиль сохранён.");
+      renderApp();
+    } catch (e) {
+      alert(String(e.message || e));
+      console.error(e);
+    }
+  };
+
   return h("div", {}, [
     topbar("Профиль", "Основное хранилище — SQLite на сервере; в браузере дубль на случай недоступности.", null),
     h("div", { class: "content" }, [
       h("div", { class: "card" }, [
         h("div", { class: "groupName" }, me?.name ?? "Пользователь"),
-        h("div", { class: "small" }, "В будущем здесь будет вход по коду, роли и управление сообществом."),
-        h("div", { class: "actions" }, [
-          h("button", { class: "btn", onclick: () => alert("Пока нет. Это прототип UI.") }, "Настройки (позже)"),
+        h("div", { class: "small" }, "Заполните профиль — это пригодится для расписания, приглашений и уведомлений."),
+        h("div", { class: "form" }, [
+          h("div", { class: "grid2" }, [
+            h("div", { class: "field" }, [
+              h("label", { class: "label", for: firstId }, "Имя"),
+              h("input", { id: firstId, value: p.firstName || "", autocomplete: "given-name", placeholder: "Имя" }),
+            ]),
+            h("div", { class: "field" }, [
+              h("label", { class: "label", for: lastId }, "Фамилия"),
+              h("input", { id: lastId, value: p.lastName || "", autocomplete: "family-name", placeholder: "Фамилия" }),
+            ]),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: titleId }, "Профессия / направление"),
+            h("input", { id: titleId, value: p.title || "", placeholder: "Напр.: гештальт-терапевт, психолог" }),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: stageId }, "Статус"),
+            h("input", { id: stageId, value: p.stage || "", placeholder: "Напр.: студент, практикующий, супервизор" }),
+          ]),
+          h("div", { class: "grid2" }, [
+            h("div", { class: "field" }, [
+              h("label", { class: "label", for: tzId }, "Часовой пояс"),
+              h("input", { id: tzId, value: p.tz || "", placeholder: "Напр.: Europe/Moscow" }),
+            ]),
+            h("div", { class: "field" }, [
+              h("label", { class: "label", for: cityId }, "Город"),
+              h("input", { id: cityId, value: p.city || "", placeholder: "Город" }),
+            ]),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: phoneId }, "Телефон (для связи)"),
+            h("input", { id: phoneId, value: p.phone || "", inputmode: "tel", placeholder: "+7..." }),
+          ]),
+          h("div", { class: "grid2" }, [
+            h("div", { class: "field" }, [
+              h("label", { class: "label", for: workDaysId }, "Рабочие дни"),
+              h("input", { id: workDaysId, value: p.workDays || "", placeholder: "Пн,Вт,Чт" }),
+            ]),
+            h("div", { class: "field" }, [
+              h("label", { class: "label", for: workHoursId }, "Рабочие часы"),
+              h("input", { id: workHoursId, value: p.workHours || "", placeholder: "10:00-19:00" }),
+            ]),
+          ]),
+          h("div", { class: "actions" }, [
+            h("button", { class: "btn primary", onclick: onSaveProfile }, "Сохранить профиль"),
+          ]),
         ]),
       ]),
       canLinkEmail
@@ -1222,6 +1332,95 @@ async function onSaveEdit(state, session) {
   location.hash = `#/session?id=${encodeURIComponent(session.id)}`;
 }
 
+function renderNewConsultation(state) {
+  const roleId = "pc_role";
+  const otherNameId = "pc_other";
+  const noteId = "pc_note";
+
+  const onCreate = async () => {
+    const role = document.getElementById(roleId)?.value || "therapist";
+    const otherName = (document.getElementById(otherNameId)?.value || "").trim();
+    const note = (document.getElementById(noteId)?.value || "").trim();
+    if (!otherName) return alert("Введите имя второй стороны (клиента/терапевта).");
+
+    const otherId = uid("u");
+    state.users.push({ id: otherId, name: otherName });
+
+    const isTherapist = role === "therapist";
+    const g = {
+      id: uid("g"),
+      name: isTherapist ? `Консультация • ${otherName}` : `Консультация • мой терапевт: ${otherName}`,
+      type: "личная",
+      color: isTherapist ? "#ffcc66" : "#55d691",
+    };
+    state.groups.push(g);
+
+    // В личной консультации: терапевт = leader, клиент = participant.
+    state.groupMembers.push({
+      groupId: g.id,
+      userId: state.meId,
+      isLeader: isTherapist,
+      isParticipant: !isTherapist,
+    });
+    state.groupMembers.push({
+      groupId: g.id,
+      userId: otherId,
+      isLeader: !isTherapist,
+      isParticipant: isTherapist,
+    });
+
+    const s = {
+      id: uid("s"),
+      groupId: g.id,
+      status: "предварительно",
+      leaders: [
+        { userId: isTherapist ? state.meId : otherId, days: "all" },
+      ],
+      blocks: [{ id: uid("b"), date: "", startTime: "", endTime: "" }],
+      note: note || "",
+    };
+    state.sessions.push(s);
+
+    await saveState(state);
+    location.hash = `#/edit-session?id=${encodeURIComponent(s.id)}`;
+  };
+
+  return h("div", {}, [
+    topbar("Личная консультация", "Уточните роль и создайте первую встречу.", null),
+    h("div", { class: "content" }, [
+      h("div", { class: "card" }, [
+        h("div", { class: "form" }, [
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: roleId }, "Моя роль"),
+            h("select", { id: roleId }, [
+              h("option", { value: "therapist" }, "Я терапевт"),
+              h("option", { value: "client" }, "Я клиент"),
+            ]),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: otherNameId }, "Имя второй стороны"),
+            h("input", { id: otherNameId, placeholder: "Например: Мария" }),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: noteId }, "Заметка (опционально)"),
+            h("input", { id: noteId, placeholder: "Напр.: формат, оплата, ссылка" }),
+          ]),
+          h("div", { class: "actions" }, [
+            h("button", { class: "btn primary", onclick: onCreate }, "Создать и назначить время"),
+            h("button", { class: "btn", onclick: () => history.back() }, "Отмена"),
+          ]),
+        ]),
+      ]),
+      h(
+        "div",
+        { class: "small", style: "margin-top:10px; opacity:.85;" },
+        "В личной консультации терапевт считается «ведущим», клиент — «участником». Это повлияет на видимость в разделах «Я веду / Я участник»."
+      ),
+    ]),
+    nav("create"),
+  ]);
+}
+
 function renderWizard(state, presetGroupId) {
   // Шаг 1: группа, шаг 2: формат, шаг 3: дни/время, шаг 4: резюме.
   let step = 1;
@@ -1455,6 +1654,10 @@ function renderApp() {
   }
   if (path === "/new-group") {
     app.appendChild(renderNewGroup(state));
+    return;
+  }
+  if (path === "/new-consultation") {
+    app.appendChild(renderNewConsultation(state));
     return;
   }
   if (path === "/") location.hash = "#/upcoming";
