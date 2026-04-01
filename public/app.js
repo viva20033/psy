@@ -206,13 +206,18 @@ async function saveState(state) {
 }
 
 function isTelegramWebApp() {
-  return Boolean(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData);
+  return Boolean(window.Telegram && window.Telegram.WebApp);
 }
 
 async function tryTelegramLogin() {
   if (!isTelegramWebApp()) return { ok: false, skipped: true };
   try {
+    // Ensure Telegram считает, что WebApp "готов" (часть клиентов заполняет initData позже).
+    try {
+      window.Telegram.WebApp.ready();
+    } catch {}
     const initData = window.Telegram.WebApp.initData;
+    if (!initData) return { ok: false, error: "Missing initData" };
     const r = await fetch(`${API_BASE}/api/auth/telegram`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -261,7 +266,12 @@ function renderLogin(stateRef) {
 
   const doTg = async () => {
     const r = await tryTelegramLogin();
-    if (!r.ok) return alert("Не удалось войти через Telegram. Проверьте, что вы открыли WebApp из бота, и что на сервере задан TELEGRAM_BOT_TOKEN.");
+    if (!r.ok) {
+      if (String(r.error || "").includes("Missing initData")) {
+        return alert("Не вижу данных Telegram (initData). Откройте приложение именно как WebApp из бота (Menu Button / кнопка).");
+      }
+      return alert("Не удалось войти через Telegram. Проверьте, что вы открыли WebApp из бота, и что на сервере задан TELEGRAM_BOT_TOKEN.");
+    }
     state = await loadState();
     location.hash = "#/upcoming";
     renderApp();
@@ -1336,6 +1346,12 @@ function renderApp() {
 window.addEventListener("hashchange", renderApp);
 
 async function boot() {
+  // Подготовка Telegram WebApp (если внутри Telegram).
+  if (isTelegramWebApp()) {
+    try {
+      window.Telegram.WebApp.ready();
+    } catch {}
+  }
   // 1) Если это Telegram WebApp — пробуем автологин
   if (isTelegramWebApp()) {
     await tryTelegramLogin();
