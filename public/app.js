@@ -231,15 +231,15 @@ async function tryTelegramLogin() {
 function renderLogin(stateRef) {
   const tgHint = isTelegramWebApp()
     ? "Открыто внутри Telegram. Нажмите «Войти через Telegram»."
-    : "Открыто в браузере. Можно войти по email и паролю.";
+    : "Открыто в браузере. Можно войти по ранее привязанному email и паролю (привязка делается внутри Telegram).";
 
   const emailId = "login_email";
   const passId = "login_pass";
 
-  const doEmail = async (mode) => {
+  const doEmail = async () => {
     const email = document.getElementById(emailId)?.value || "";
     const password = document.getElementById(passId)?.value || "";
-    const endpoint = mode === "register" ? "/api/auth/email-register" : "/api/auth/email-login";
+    const endpoint = "/api/auth/email-login";
     try {
       const r = await fetch(`${API_BASE}${endpoint}`, {
         method: "POST",
@@ -252,6 +252,7 @@ function renderLogin(stateRef) {
       if (!r.ok) throw new Error(j?.error || txt);
       currentUserId = j.userId;
       state = await loadState();
+      location.hash = "#/upcoming";
       renderApp();
     } catch (e) {
       alert(String(e.message || e));
@@ -262,6 +263,7 @@ function renderLogin(stateRef) {
     const r = await tryTelegramLogin();
     if (!r.ok) return alert("Не удалось войти через Telegram. Проверьте, что вы открыли WebApp из бота, и что на сервере задан TELEGRAM_BOT_TOKEN.");
     state = await loadState();
+    location.hash = "#/upcoming";
     renderApp();
   };
 
@@ -277,7 +279,7 @@ function renderLogin(stateRef) {
         : null,
       h("div", { class: "card" }, [
         h("div", { class: "groupName" }, "Email + пароль"),
-        h("div", { class: "small" }, "Быстрый вариант без писем. Пароль хранится в Supabase (в хэше)."),
+        h("div", { class: "small" }, "Вход по уже привязанному email. Чтобы привязать — откройте WebApp в Telegram и сделайте привязку в «Профиль»."),
         h("div", { class: "form" }, [
           h("div", { class: "field" }, [
             h("label", { class: "label", for: emailId }, "Email"),
@@ -288,8 +290,15 @@ function renderLogin(stateRef) {
             h("input", { id: passId, type: "password", placeholder: "минимум 6 символов", autocomplete: "current-password" }),
           ]),
           h("div", { class: "actions" }, [
-            h("button", { class: "btn primary", onclick: () => doEmail("login") }, "Войти"),
-            h("button", { class: "btn", onclick: () => doEmail("register") }, "Зарегистрироваться"),
+            h("button", { class: "btn primary", onclick: () => doEmail() }, "Войти"),
+            h(
+              "button",
+              {
+                class: "btn",
+                onclick: () => alert("Откройте это приложение через Telegram-бота, войдите и привяжите email в «Профиль»."),
+              },
+              "Нет привязанной почты?"
+            ),
           ]),
         ]),
       ]),
@@ -826,6 +835,7 @@ function renderCreate(state) {
 
 function renderProfile(state) {
   const me = getMe(state);
+  const canLinkEmail = isTelegramWebApp() && currentUserId && String(currentUserId).startsWith("tg:");
   return h("div", {}, [
     topbar("Профиль", "Основное хранилище — SQLite на сервере; в браузере дубль на случай недоступности.", null),
     h("div", { class: "content" }, [
@@ -835,6 +845,66 @@ function renderProfile(state) {
         h("div", { class: "actions" }, [
           h("button", { class: "btn", onclick: () => alert("Пока нет. Это прототип UI.") }, "Настройки (позже)"),
         ]),
+      ]),
+      canLinkEmail
+        ? (() => {
+            const emailId = "link_email";
+            const passId = "link_pass";
+            const onLink = async () => {
+              const email = document.getElementById(emailId)?.value || "";
+              const password = document.getElementById(passId)?.value || "";
+              try {
+                const r = await fetch(`${API_BASE}/api/auth/email-link`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ email, password }),
+                });
+                const txt = await r.text();
+                let j = null;
+                try { j = JSON.parse(txt); } catch { j = { error: txt }; }
+                if (!r.ok) throw new Error(j?.error || txt);
+                alert("Email привязан. Теперь можно входить в браузере по email+паролю.");
+              } catch (e) {
+                alert(String(e.message || e));
+              }
+            };
+            return h("div", { class: "card" }, [
+              h("div", { class: "sectionTitle" }, "Привязать email (для входа в браузере)"),
+              h("div", { class: "small" }, "Привязка доступна после входа через Telegram. Пароль хранится в Supabase (в хэше)."),
+              h("div", { class: "form" }, [
+                h("div", { class: "field" }, [
+                  h("label", { class: "label", for: emailId }, "Email"),
+                  h("input", { id: emailId, placeholder: "you@example.com", inputmode: "email", autocomplete: "email" }),
+                ]),
+                h("div", { class: "field" }, [
+                  h("label", { class: "label", for: passId }, "Пароль"),
+                  h("input", { id: passId, type: "password", placeholder: "минимум 6 символов" }),
+                ]),
+                h("div", { class: "actions" }, [h("button", { class: "btn primary", onclick: onLink }, "Привязать")]),
+              ]),
+            ]);
+          })()
+        : null,
+      h("div", { class: "actions" }, [
+        h(
+          "button",
+          {
+            class: "btn danger",
+            onclick: async () => {
+              try {
+                await fetch(`${API_BASE}/api/auth/logout`, { method: "POST" });
+                currentUserId = null;
+                location.hash = "#/login";
+                state = buildDemoState();
+                renderApp();
+              } catch (e) {
+                alert("Не удалось выйти. Обновите страницу.");
+                console.error(e);
+              }
+            },
+          },
+          "Выйти"
+        ),
       ]),
     ]),
     nav("profile"),

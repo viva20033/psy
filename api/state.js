@@ -1,5 +1,5 @@
 import { getSupabaseAdmin } from "./_lib/supabase.js";
-import { buildDemoState, validateState } from "./_lib/demoState.js";
+import { buildEmptyState, validateState } from "./_lib/demoState.js";
 import { requireUserId } from "./_lib/auth.js";
 
 async function ensureRow(supabase, rowId) {
@@ -12,11 +12,11 @@ async function ensureRow(supabase, rowId) {
   if (error) throw error;
   if (data?.state && Object.keys(data.state).length > 0) return data.state;
 
-  // Пусто — заливаем демо.
-  const demo = buildDemoState();
-  const up = await supabase.from("app_state").upsert({ id: rowId, state: demo });
+  // Пусто — создаём пустое состояние под пользователя.
+  const empty = buildEmptyState({ userId: rowId, displayName: "Вы" });
+  const up = await supabase.from("app_state").upsert({ id: rowId, state: empty });
   if (up.error) throw up.error;
-  return demo;
+  return empty;
 }
 
 export default async function handler(req, res) {

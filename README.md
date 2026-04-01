@@ -17,7 +17,7 @@ create table if not exists app_state (
 );
 
 -- app_state теперь хранится "на пользователя": id = 'tg:<id>' или 'email:<email>'.
--- Пустую строку заранее создавать не обязательно, API создаст демо сам при первом входе.
+-- Пустую строку заранее создавать не обязательно, API создаст "пустой кабинет" при первом входе.
 ```
 
 Дополнительно для входа по email+пароль (быстрый вариант без писем):
@@ -49,6 +49,12 @@ create table if not exists app_accounts (
 - UI: `/`
 - Вход: `/#/login`
 - API: `/api/state` (GET/PUT), `/api/reset-demo` (POST)
+
+## Вход и привязка
+
+- **Первый вход**: через Telegram WebApp (`/api/auth/telegram`).
+- **Привязка email**: внутри Telegram откройте `Профиль` → `Привязать email` (запрос `/api/auth/email-link`).
+- **Вход в браузере**: `/#/login` → email+пароль (`/api/auth/email-login`).
 
 ## Локальный запуск (без npm install)
 

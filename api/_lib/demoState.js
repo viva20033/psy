@@ -106,6 +106,17 @@ export function buildDemoState() {
   };
 }
 
+export function buildEmptyState({ userId, displayName }) {
+  const meId = String(userId || "");
+  return {
+    meId,
+    users: [{ id: meId, name: displayName || "Вы" }],
+    groups: [],
+    groupMembers: [],
+    sessions: [],
+  };
+}
+
 export function validateState(s) {
   if (!s || typeof s !== "object") return "Некорректное тело запроса";
   if (typeof s.meId !== "string") return "meId обязателен";

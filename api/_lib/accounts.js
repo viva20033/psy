@@ -11,16 +11,13 @@ function hashPassword(pw, saltHex) {
   return key.toString("hex");
 }
 
-export function emailUserId(email) {
-  return `email:${normEmail(email)}`;
-}
-
 export async function ensureAccountsTable() {
   // Table is created by SQL in README; this is a no-op placeholder to keep flow explicit.
   return true;
 }
 
-export async function registerEmailPassword({ email, password }) {
+export async function linkEmailPassword({ userId, email, password }) {
+  if (!String(userId || "").startsWith("tg:")) return { ok: false, error: "Привязка доступна только после входа через Telegram" };
   const e = normEmail(email);
   if (!e || !e.includes("@")) return { ok: false, error: "Некорректный email" };
   if (String(password || "").length < 6) return { ok: false, error: "Пароль должен быть минимум 6 символов" };
@@ -28,14 +25,13 @@ export async function registerEmailPassword({ email, password }) {
   const supabase = getSupabaseAdmin();
   const salt = crypto.randomBytes(16).toString("hex");
   const pwHash = hashPassword(password, salt);
-  const user_id = emailUserId(e);
 
-  const { error } = await supabase.from("app_accounts").insert({ user_id, email: e, salt, pw_hash: pwHash });
+  const { error } = await supabase.from("app_accounts").insert({ user_id: userId, email: e, salt, pw_hash: pwHash });
   if (error) {
     if (String(error.message || "").toLowerCase().includes("duplicate")) return { ok: false, error: "Аккаунт уже существует" };
     return { ok: false, error: error.message || String(error) };
   }
-  return { ok: true, userId: user_id };
+  return { ok: true, userId };
 }
 
 export async function verifyEmailPassword({ email, password }) {
