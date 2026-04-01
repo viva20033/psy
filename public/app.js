@@ -46,6 +46,14 @@ const RU_MONTHS = [
   "Декабрь",
 ];
 
+const GROUP_TYPES = [
+  { id: "обучающая", label: "Обучающая" },
+  { id: "супервизионная", label: "Супервизионная" },
+  { id: "терапевтическая", label: "Терапевтическая" },
+  { id: "интервизионная", label: "Интервизионная" },
+  { id: "другое", label: "Другое" },
+];
+
 function parseISODateParts(iso) {
   if (!tryParseISODate(iso)) return null;
   const [y, m, d] = iso.split("-").map(Number);
@@ -853,6 +861,13 @@ function renderCreate(state) {
     topbar("Создать", "Самое частое действие — запланировать встречу группы.", null),
     h("div", { class: "content" }, [
       h("div", { class: "card" }, [
+        h("div", { class: "sectionTitle" }, "Группы"),
+        h("div", { class: "small" }, "Сначала создайте группу, затем планируйте встречи и добавляйте людей."),
+        h("div", { class: "actions" }, [
+          h("button", { class: "btn primary", onclick: () => (location.hash = "#/new-group") }, "+ Создать группу"),
+        ]),
+      ]),
+      h("div", { class: "card" }, [
         h("div", { class: "groupName" }, "Что вы хотите сделать?"),
         h("div", { class: "small" }, "Данные сохраняются на сервере (SQLite). Сценарий: плавающие даты и время «уточним позже»."),
         h("div", { class: "actions" }, [
@@ -881,6 +896,58 @@ function renderCreate(state) {
       ]),
     ]),
     nav("create"),
+  ]);
+}
+
+function renderNewGroup(state) {
+  const nameId = "ng_name";
+  const typeId = "ng_type";
+  const colorId = "ng_color";
+
+  const onSave = async () => {
+    const name = (document.getElementById(nameId)?.value || "").trim();
+    const type = document.getElementById(typeId)?.value || "другое";
+    const color = document.getElementById(colorId)?.value || "#7aa7ff";
+    if (!name) return alert("Введите название группы.");
+
+    const g = { id: uid("g"), name, type, color };
+    state.groups.push(g);
+    state.groupMembers.push({ groupId: g.id, userId: state.meId, isLeader: true, isParticipant: false });
+    await saveState(state);
+    location.hash = `#/group?id=${encodeURIComponent(g.id)}`;
+  };
+
+  const typeSel = h(
+    "select",
+    { id: typeId },
+    GROUP_TYPES.map((t) => h("option", { value: t.id }, t.label))
+  );
+
+  return h("div", {}, [
+    topbar("Новая группа", "Создайте группу: тип, цвет и название.", null),
+    h("div", { class: "content" }, [
+      h("div", { class: "card" }, [
+        h("div", { class: "form" }, [
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: nameId }, "Название"),
+            h("input", { id: nameId, placeholder: "Например: Супервизия по четвергам" }),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: typeId }, "Тип"),
+            typeSel,
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: colorId }, "Цвет"),
+            h("input", { id: colorId, type: "color", value: "#7aa7ff" }),
+          ]),
+          h("div", { class: "actions" }, [
+            h("button", { class: "btn primary", onclick: onSave }, "Создать"),
+            h("button", { class: "btn", onclick: () => history.back() }, "Отмена"),
+          ]),
+        ]),
+      ]),
+    ]),
+    nav("groups"),
   ]);
 }
 
@@ -1180,6 +1247,16 @@ function renderWizard(state, presetGroupId) {
   };
 
   const step1 = () => {
+    if (!state.groups.length) {
+      return h("div", { class: "card" }, [
+        h("div", { class: "groupName" }, "Шаг 1: группа"),
+        h("div", { class: "small" }, "Пока нет ни одной группы. Сначала создайте группу — потом сможете планировать встречи."),
+        h("div", { class: "actions" }, [
+          h("button", { class: "btn primary", onclick: () => (location.hash = "#/new-group") }, "+ Создать группу"),
+          h("button", { class: "btn", onclick: () => (location.hash = "#/create") }, "Назад"),
+        ]),
+      ]);
+    }
     const sel = h(
       "select",
       { id: "groupSel" },
@@ -1374,6 +1451,10 @@ function renderApp() {
   }
   if (path === "/login") {
     app.appendChild(renderLogin(state));
+    return;
+  }
+  if (path === "/new-group") {
+    app.appendChild(renderNewGroup(state));
     return;
   }
   if (path === "/") location.hash = "#/upcoming";
