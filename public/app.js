@@ -209,6 +209,15 @@ function isTelegramWebApp() {
   return Boolean(window.Telegram && window.Telegram.WebApp);
 }
 
+function isTelegramWebAppContext() {
+  if (!isTelegramWebApp()) return false;
+  const w = window.Telegram.WebApp;
+  // Вне Telegram скрипт может существовать, но initData/user будут пустыми.
+  const uid = w?.initDataUnsafe?.user?.id;
+  if (uid) return true;
+  return Boolean(w?.initData && String(w.initData).length > 0);
+}
+
 function getBotUsername() {
   // Можно задать в index.html: <meta name="telegram-bot-username" content="my_bot" />
   const meta = document.querySelector('meta[name="telegram-bot-username"]');
@@ -261,7 +270,7 @@ async function tryTelegramLogin() {
 }
 
 function renderLogin(stateRef) {
-  const tgHint = isTelegramWebApp()
+  const tgHint = isTelegramWebAppContext()
     ? "Открыто внутри Telegram. Нажмите «Войти через Telegram»."
     : "Открыто в браузере. Можно войти по ранее привязанному email и паролю (привязка делается внутри Telegram).";
 
@@ -312,7 +321,7 @@ function renderLogin(stateRef) {
   return h("div", {}, [
     topbar("Вход", tgHint, null),
     h("div", { class: "content" }, [
-      isTelegramWebApp()
+      isTelegramWebAppContext()
         ? h("div", { class: "card" }, [
             h("div", { class: "groupName" }, "Telegram WebApp"),
             h("div", { class: "small" }, "Вход будет подтверждён на сервере по подписи Telegram (initData)."),
