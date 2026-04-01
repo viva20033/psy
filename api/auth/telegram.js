@@ -2,9 +2,19 @@ import crypto from "crypto";
 import { issueSessionToken, setSessionCookie } from "../_lib/auth.js";
 
 function parseInitData(initData) {
-  const p = new URLSearchParams(String(initData || ""));
+  // Важно: URLSearchParams декодирует '+' как пробел, что может ломать проверку подписи.
+  // Парсим вручную и декодируем через decodeURIComponent (без замены '+').
+  const raw = String(initData || "");
   const out = {};
-  for (const [k, v] of p.entries()) out[k] = v;
+  for (const part of raw.split("&")) {
+    if (!part) continue;
+    const idx = part.indexOf("=");
+    const kRaw = idx === -1 ? part : part.slice(0, idx);
+    const vRaw = idx === -1 ? "" : part.slice(idx + 1);
+    const k = decodeURIComponent(kRaw);
+    const v = decodeURIComponent(vRaw);
+    out[k] = v;
+  }
   return out;
 }
 
