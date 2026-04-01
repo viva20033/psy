@@ -1,13 +1,12 @@
 import { getSupabaseAdmin } from "./_lib/supabase.js";
 import { buildDemoState, validateState } from "./_lib/demoState.js";
+import { requireUserId } from "./_lib/auth.js";
 
-const ROW_ID = "default";
-
-async function ensureRow(supabase) {
+async function ensureRow(supabase, rowId) {
   const { data, error } = await supabase
     .from("app_state")
     .select("id,state,updated_at")
-    .eq("id", ROW_ID)
+    .eq("id", rowId)
     .maybeSingle();
 
   if (error) throw error;
@@ -15,17 +14,20 @@ async function ensureRow(supabase) {
 
   // Пусто — заливаем демо.
   const demo = buildDemoState();
-  const up = await supabase.from("app_state").upsert({ id: ROW_ID, state: demo });
+  const up = await supabase.from("app_state").upsert({ id: rowId, state: demo });
   if (up.error) throw up.error;
   return demo;
 }
 
 export default async function handler(req, res) {
   try {
+    const a = requireUserId(req);
+    if (!a.ok) return res.status(401).json({ error: "Unauthorized" });
+    const rowId = a.userId;
     const supabase = getSupabaseAdmin();
 
     if (req.method === "GET") {
-      const state = await ensureRow(supabase);
+      const state = await ensureRow(supabase, rowId);
       return res.status(200).json(state);
     }
 
@@ -34,7 +36,7 @@ export default async function handler(req, res) {
       const err = validateState(incoming);
       if (err) return res.status(400).json({ error: err });
 
-      const up = await supabase.from("app_state").upsert({ id: ROW_ID, state: incoming });
+      const up = await supabase.from("app_state").upsert({ id: rowId, state: incoming });
       if (up.error) throw up.error;
       return res.status(200).json(incoming);
     }

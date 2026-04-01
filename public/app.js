@@ -1,6 +1,7 @@
 // SPA без сборки: hash-роутинг. Данные с сервера (SQLite); localStorage — запасной вариант.
 const STORAGE_KEY = "psy_cabinet_v1";
 const API_BASE = "";
+let currentUserId = null;
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
@@ -169,6 +170,12 @@ function buildDemoState() {
 
 async function loadState() {
   try {
+    if (!currentUserId) {
+      const me = await fetch(`${API_BASE}/api/me`);
+      if (!me.ok) throw new Error(await me.text());
+      const mj = await me.json();
+      currentUserId = mj.userId;
+    }
     const r = await fetch(`${API_BASE}/api/state`);
     if (!r.ok) throw new Error(await r.text());
     return await r.json();
@@ -196,6 +203,99 @@ async function saveState(state) {
     console.warn("Сервер недоступен, сохранено только в браузере.", e);
     alert("Сохранено только на этом устройстве (сервер недоступен). Проверьте, что вы открыли сайт через http://localhost:3000, а не файл с диска.");
   }
+}
+
+function isTelegramWebApp() {
+  return Boolean(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData);
+}
+
+async function tryTelegramLogin() {
+  if (!isTelegramWebApp()) return { ok: false, skipped: true };
+  try {
+    const initData = window.Telegram.WebApp.initData;
+    const r = await fetch(`${API_BASE}/api/auth/telegram`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+    currentUserId = j.userId;
+    return { ok: true };
+  } catch (e) {
+    console.error(e);
+    return { ok: false, error: e };
+  }
+}
+
+function renderLogin(stateRef) {
+  const tgHint = isTelegramWebApp()
+    ? "Открыто внутри Telegram. Нажмите «Войти через Telegram»."
+    : "Открыто в браузере. Можно войти по email и паролю.";
+
+  const emailId = "login_email";
+  const passId = "login_pass";
+
+  const doEmail = async (mode) => {
+    const email = document.getElementById(emailId)?.value || "";
+    const password = document.getElementById(passId)?.value || "";
+    const endpoint = mode === "register" ? "/api/auth/email-register" : "/api/auth/email-login";
+    try {
+      const r = await fetch(`${API_BASE}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const txt = await r.text();
+      let j = null;
+      try { j = JSON.parse(txt); } catch { j = { error: txt }; }
+      if (!r.ok) throw new Error(j?.error || txt);
+      currentUserId = j.userId;
+      state = await loadState();
+      renderApp();
+    } catch (e) {
+      alert(String(e.message || e));
+    }
+  };
+
+  const doTg = async () => {
+    const r = await tryTelegramLogin();
+    if (!r.ok) return alert("Не удалось войти через Telegram. Проверьте, что вы открыли WebApp из бота, и что на сервере задан TELEGRAM_BOT_TOKEN.");
+    state = await loadState();
+    renderApp();
+  };
+
+  return h("div", {}, [
+    topbar("Вход", tgHint, null),
+    h("div", { class: "content" }, [
+      isTelegramWebApp()
+        ? h("div", { class: "card" }, [
+            h("div", { class: "groupName" }, "Telegram WebApp"),
+            h("div", { class: "small" }, "Вход будет подтверждён на сервере по подписи Telegram (initData)."),
+            h("div", { class: "actions" }, [h("button", { class: "btn primary", onclick: doTg }, "Войти через Telegram")]),
+          ])
+        : null,
+      h("div", { class: "card" }, [
+        h("div", { class: "groupName" }, "Email + пароль"),
+        h("div", { class: "small" }, "Быстрый вариант без писем. Пароль хранится в Supabase (в хэше)."),
+        h("div", { class: "form" }, [
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: emailId }, "Email"),
+            h("input", { id: emailId, placeholder: "you@example.com", inputmode: "email", autocomplete: "email" }),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: passId }, "Пароль"),
+            h("input", { id: passId, type: "password", placeholder: "минимум 6 символов", autocomplete: "current-password" }),
+          ]),
+          h("div", { class: "actions" }, [
+            h("button", { class: "btn primary", onclick: () => doEmail("login") }, "Войти"),
+            h("button", { class: "btn", onclick: () => doEmail("register") }, "Зарегистрироваться"),
+          ]),
+        ]),
+      ]),
+      h("div", { class: "small", style: "margin-top:12px; opacity:.85;" }, "После входа данные сохраняются в вашей персональной записи в Supabase, а не в общем demo."),
+    ]),
+  ]);
 }
 
 function getMe(state) {
@@ -1142,6 +1242,10 @@ function renderApp() {
     app.appendChild(h("div", { class: "content" }, [h("div", { class: "empty" }, "Загрузка…")]));
     return;
   }
+  if (path === "/login") {
+    app.appendChild(renderLogin(state));
+    return;
+  }
   if (path === "/") location.hash = "#/upcoming";
   else if (path === "/upcoming") app.appendChild(renderUpcoming(state, params.get("mode") || "lead"));
   else if (path === "/year") {
@@ -1162,7 +1266,23 @@ function renderApp() {
 window.addEventListener("hashchange", renderApp);
 
 async function boot() {
-  state = await loadState();
+  // 1) Если это Telegram WebApp — пробуем автологин
+  if (isTelegramWebApp()) {
+    await tryTelegramLogin();
+  }
+  // 2) Проверим сессию; если нет — покажем вход
+  try {
+    const me = await fetch(`${API_BASE}/api/me`);
+    if (me.ok) {
+      const mj = await me.json();
+      currentUserId = mj.userId;
+      state = await loadState();
+      renderApp();
+      return;
+    }
+  } catch {}
+  location.hash = "#/login";
+  state = buildDemoState();
   renderApp();
 }
 boot();

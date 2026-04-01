@@ -16,9 +16,20 @@ create table if not exists app_state (
   updated_at timestamptz not null default now()
 );
 
-insert into app_state (id, state)
-values ('default', '{}'::jsonb)
-on conflict (id) do nothing;
+-- app_state теперь хранится "на пользователя": id = 'tg:<id>' или 'email:<email>'.
+-- Пустую строку заранее создавать не обязательно, API создаст демо сам при первом входе.
+```
+
+Дополнительно для входа по email+пароль (быстрый вариант без писем):
+
+```sql
+create table if not exists app_accounts (
+  user_id text primary key,
+  email text unique not null,
+  salt text not null,
+  pw_hash text not null,
+  created_at timestamptz not null default now()
+);
 ```
 
 ## 2) Vercel: переменные окружения
@@ -27,6 +38,8 @@ on conflict (id) do nothing;
 
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `AUTH_SECRET` (любая длинная случайная строка)
+- `TELEGRAM_BOT_TOKEN` (токен бота, который открывает WebApp)
 
 ## 3) Deploy на Vercel
 
@@ -34,6 +47,7 @@ on conflict (id) do nothing;
 
 После деплоя:
 - UI: `/`
+- Вход: `/#/login`
 - API: `/api/state` (GET/PUT), `/api/reset-demo` (POST)
 
 ## Локальный запуск (без npm install)
