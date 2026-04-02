@@ -1148,6 +1148,13 @@ function renderProfile(state) {
   ]);
 }
 
+async function deleteSession(state, sessionId) {
+  const idx = state.sessions.findIndex((x) => x.id === sessionId);
+  if (idx === -1) return;
+  state.sessions.splice(idx, 1);
+  await saveState(state);
+}
+
 function renderSession(state, sessionId) {
   const s = state.sessions.find((x) => x.id === sessionId);
   if (!s) return renderNotFound("Встреча не найдена");
@@ -1182,6 +1189,26 @@ function renderSession(state, sessionId) {
         s.note ? h("div", { class: "small" }, s.note) : null,
         h("div", { class: "actions" }, [
           canEdit ? h("button", { class: "btn primary", onclick: () => (location.hash = `#/edit-session?id=${encodeURIComponent(s.id)}`) }, "Изменить") : null,
+          canEdit
+            ? h(
+                "button",
+                {
+                  class: "btn danger",
+                  onclick: async () => {
+                    if (!confirm("Удалить эту встречу? Действие нельзя отменить.")) return;
+                    try {
+                      await deleteSession(state, s.id);
+                      location.hash = g?.id ? `#/group?id=${encodeURIComponent(g.id)}` : "#/upcoming";
+                      renderApp();
+                    } catch (e) {
+                      alert(String(e.message || e));
+                      console.error(e);
+                    }
+                  },
+                },
+                "Удалить встречу"
+              )
+            : null,
           h("button", { class: "btn", onclick: () => history.back() }, "Назад"),
         ]),
       ]),
@@ -1228,6 +1255,24 @@ function renderEditSession(state, sessionId) {
         })(),
         h("div", { class: "actions" }, [
           h("button", { class: "btn primary", onclick: async () => onSaveEdit(state, s) }, "Сохранить"),
+          h(
+            "button",
+            {
+              class: "btn danger",
+              onclick: async () => {
+                if (!confirm("Удалить эту встречу? Действие нельзя отменить.")) return;
+                try {
+                  await deleteSession(state, s.id);
+                  location.hash = g?.id ? `#/group?id=${encodeURIComponent(g.id)}` : "#/upcoming";
+                  renderApp();
+                } catch (e) {
+                  alert(String(e.message || e));
+                  console.error(e);
+                }
+              },
+            },
+            "Удалить встречу"
+          ),
           h("button", { class: "btn", onclick: () => history.back() }, "Отмена"),
         ]),
       ]),
