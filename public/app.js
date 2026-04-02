@@ -2,6 +2,22 @@
 const STORAGE_KEY = "psy_cabinet_v1";
 const API_BASE = "";
 let currentUserId = null;
+/** undefined — ещё не запрашивали; null — нет записи в app_accounts; string — привязанный email */
+let profileLinkedEmail = undefined;
+
+async function refreshLinkedEmail() {
+  try {
+    const r = await fetch(`${API_BASE}/api/me`);
+    if (!r.ok) {
+      profileLinkedEmail = null;
+      return;
+    }
+    const j = await r.json();
+    profileLinkedEmail = j.linkedEmail != null ? j.linkedEmail : null;
+  } catch {
+    profileLinkedEmail = null;
+  }
+}
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
@@ -271,6 +287,7 @@ async function tryTelegramLogin() {
     if (!r.ok) throw new Error(txt);
     const j = JSON.parse(txt);
     currentUserId = j.userId;
+    await refreshLinkedEmail();
     return { ok: true };
   } catch (e) {
     console.error(e);
@@ -301,6 +318,7 @@ function renderLogin(stateRef) {
       try { j = JSON.parse(txt); } catch { j = { error: txt }; }
       if (!r.ok) throw new Error(j?.error || txt);
       currentUserId = j.userId;
+      await refreshLinkedEmail();
       state = await loadState();
       location.hash = "#/upcoming";
       renderApp();
@@ -966,6 +984,14 @@ function renderNewGroup(state) {
 function renderProfile(state) {
   const me = getMe(state);
   const canLinkEmail = isTelegramWebApp() && currentUserId && String(currentUserId).startsWith("tg:");
+  if (profileLinkedEmail === undefined) {
+    refreshLinkedEmail().then(() => renderApp());
+    return h("div", {}, [
+      topbar("Профиль", "Загрузка…", null),
+      h("div", { class: "content profile-page" }, [h("div", { class: "empty" }, "Загружаем данные аккаунта…")]),
+      nav("profile"),
+    ]);
+  }
   const p = me?.profile || {};
   const firstId = "p_first";
   const lastId = "p_last";
@@ -1021,13 +1047,13 @@ function renderProfile(state) {
   };
 
   return h("div", {}, [
-    topbar("Профиль", "Основное хранилище — SQLite на сервере; в браузере дубль на случай недоступности.", null),
-    h("div", { class: "content" }, [
+    topbar("Профиль", "Данные сохраняются в Supabase.", null),
+    h("div", { class: "content profile-page" }, [
       h("div", { class: "card" }, [
         h("div", { class: "groupName" }, me?.name ?? "Пользователь"),
         h("div", { class: "small" }, "Заполните профиль — это пригодится для расписания, приглашений и уведомлений."),
-        h("div", { class: "form" }, [
-          h("div", { class: "grid2" }, [
+        h("div", { class: "form profile-form" }, [
+          h("div", { class: "grid2 profile-grid2" }, [
             h("div", { class: "field" }, [
               h("label", { class: "label", for: firstId }, "Имя"),
               h("input", { id: firstId, value: p.firstName || "", autocomplete: "given-name", placeholder: "Имя" }),
@@ -1045,7 +1071,7 @@ function renderProfile(state) {
             h("label", { class: "label", for: stageId }, "Статус"),
             h("input", { id: stageId, value: p.stage || "", placeholder: "Напр.: студент, практикующий, супервизор" }),
           ]),
-          h("div", { class: "grid2" }, [
+          h("div", { class: "grid2 profile-grid2" }, [
             h("div", { class: "field" }, [
               h("label", { class: "label", for: tzId }, "Часовой пояс"),
               h("input", { id: tzId, value: p.tz || "", placeholder: "Напр.: Europe/Moscow" }),
@@ -1059,7 +1085,7 @@ function renderProfile(state) {
             h("label", { class: "label", for: phoneId }, "Телефон (для связи)"),
             h("input", { id: phoneId, value: p.phone || "", inputmode: "tel", placeholder: "+7..." }),
           ]),
-          h("div", { class: "grid2" }, [
+          h("div", { class: "grid2 profile-grid2" }, [
             h("div", { class: "field" }, [
               h("label", { class: "label", for: workDaysId }, "Рабочие дни"),
               h("input", { id: workDaysId, value: p.workDays || "", placeholder: "Пн,Вт,Чт" }),
@@ -1074,7 +1100,52 @@ function renderProfile(state) {
           ]),
         ]),
       ]),
-      canLinkEmail
+      profileLinkedEmail && !canLinkEmail
+        ? h("div", { class: "card" }, [
+            h("div", { class: "sectionTitle" }, "Вход в браузере"),
+            h("div", { class: "small" }, `Аккаунт привязан к почте: ${profileLinkedEmail}`),
+          ])
+        : null,
+      canLinkEmail && profileLinkedEmail
+        ? (() => {
+            const unlinkPassId = "unlink_pass";
+            const onUnlink = async () => {
+              const password = document.getElementById(unlinkPassId)?.value || "";
+              if (!password) return alert("Введите пароль, чтобы отвязать почту.");
+              if (!confirm("Отвязать почту? Войти в браузере по email больше не получится, пока не привяжете снова.")) return;
+              try {
+                const r = await fetch(`${API_BASE}/api/auth/email-unlink`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ password }),
+                });
+                const txt = await r.text();
+                let j = null;
+                try { j = JSON.parse(txt); } catch { j = { error: txt }; }
+                if (!r.ok) throw new Error(j?.error || txt);
+                profileLinkedEmail = null;
+                alert("Почта отвязана.");
+                renderApp();
+              } catch (e) {
+                alert(String(e.message || e));
+              }
+            };
+            return h("div", { class: "card" }, [
+              h("div", { class: "sectionTitle" }, "Почта для входа в браузере"),
+              h("div", { class: "small" }, `Привязано: ${profileLinkedEmail}`),
+              h("div", { class: "form profile-form" }, [
+                h("div", { class: "field" }, [
+                  h("label", { class: "label", for: unlinkPassId }, "Пароль для подтверждения"),
+                  h("input", { id: unlinkPassId, type: "password", placeholder: "Пароль от этой почты", autocomplete: "current-password" }),
+                ]),
+                h("div", { class: "actions profile-actions" }, [
+                  h("button", { class: "btn danger", onclick: onUnlink }, "Отвязать почту"),
+                ]),
+              ]),
+            ]);
+          })()
+        : null,
+      canLinkEmail && !profileLinkedEmail
         ? (() => {
             const emailId = "link_email";
             const passId = "link_pass";
@@ -1091,7 +1162,9 @@ function renderProfile(state) {
                 let j = null;
                 try { j = JSON.parse(txt); } catch { j = { error: txt }; }
                 if (!r.ok) throw new Error(j?.error || txt);
+                profileLinkedEmail = j.email || String(email || "").trim().toLowerCase() || null;
                 alert("Email привязан. Теперь можно входить в браузере по email+паролю.");
+                renderApp();
               } catch (e) {
                 alert(String(e.message || e));
               }
@@ -1099,7 +1172,7 @@ function renderProfile(state) {
             return h("div", { class: "card" }, [
               h("div", { class: "sectionTitle" }, "Привязать email (для входа в браузере)"),
               h("div", { class: "small" }, "Привязка доступна после входа через Telegram. Пароль хранится в Supabase (в хэше)."),
-              h("div", { class: "form" }, [
+              h("div", { class: "form profile-form" }, [
                 h("div", { class: "field" }, [
                   h("label", { class: "label", for: emailId }, "Email"),
                   h("input", { id: emailId, placeholder: "you@example.com", inputmode: "email", autocomplete: "email" }),
@@ -1108,12 +1181,12 @@ function renderProfile(state) {
                   h("label", { class: "label", for: passId }, "Пароль"),
                   h("input", { id: passId, type: "password", placeholder: "минимум 6 символов" }),
                 ]),
-                h("div", { class: "actions" }, [h("button", { class: "btn primary", onclick: onLink }, "Привязать")]),
+                h("div", { class: "actions profile-actions" }, [h("button", { class: "btn primary", onclick: onLink }, "Привязать")]),
               ]),
             ]);
           })()
         : null,
-      h("div", { class: "actions" }, [
+      h("div", { class: "actions profile-actions" }, [
         h(
           "button",
           {
@@ -1122,6 +1195,7 @@ function renderProfile(state) {
               try {
                 await fetch(`${API_BASE}/api/auth/logout`, { method: "POST" });
                 currentUserId = null;
+                profileLinkedEmail = undefined;
                 location.hash = "#/login";
                 state = buildDemoState();
                 renderApp();
@@ -1741,6 +1815,7 @@ async function boot() {
     if (me.ok) {
       const mj = await me.json();
       currentUserId = mj.userId;
+      profileLinkedEmail = mj.linkedEmail != null ? mj.linkedEmail : null;
       state = await loadState();
       renderApp();
       return;

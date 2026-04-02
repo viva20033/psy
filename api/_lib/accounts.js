@@ -31,7 +31,7 @@ export async function linkEmailPassword({ userId, email, password }) {
     if (String(error.message || "").toLowerCase().includes("duplicate")) return { ok: false, error: "Аккаунт уже существует" };
     return { ok: false, error: error.message || String(error) };
   }
-  return { ok: true, userId };
+  return { ok: true, userId, email: e };
 }
 
 export async function verifyEmailPassword({ email, password }) {
@@ -48,5 +48,31 @@ export async function verifyEmailPassword({ email, password }) {
   const ok = expected.length === actual.length && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
   if (!ok) return { ok: false, error: "Неверный пароль" };
   return { ok: true, userId: data.user_id };
+}
+
+export async function getLinkedEmailForUser(userId) {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.from("app_accounts").select("email").eq("user_id", userId).maybeSingle();
+  if (error) return { ok: false, error: error.message || String(error), email: null };
+  return { ok: true, email: data?.email || null };
+}
+
+export async function unlinkEmailForUser({ userId, password }) {
+  if (!String(userId || "").startsWith("tg:")) return { ok: false, error: "Отвязка доступна только для аккаунта Telegram" };
+  if (String(password || "").length < 6) return { ok: false, error: "Введите пароль" };
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.from("app_accounts").select("salt,pw_hash").eq("user_id", userId).maybeSingle();
+  if (error) return { ok: false, error: error.message || String(error) };
+  if (!data) return { ok: false, error: "Почта не привязана" };
+
+  const expected = String(data.pw_hash || "");
+  const actual = hashPassword(password, data.salt);
+  const ok = expected.length === actual.length && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
+  if (!ok) return { ok: false, error: "Неверный пароль" };
+
+  const { error: delErr } = await supabase.from("app_accounts").delete().eq("user_id", userId);
+  if (delErr) return { ok: false, error: delErr.message || String(delErr) };
+  return { ok: true };
 }
 

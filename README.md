@@ -54,6 +54,7 @@ create table if not exists app_accounts (
 
 - **Первый вход**: через Telegram WebApp (`/api/auth/telegram`).
 - **Привязка email**: внутри Telegram откройте `Профиль` → `Привязать email` (запрос `/api/auth/email-link`).
+- **Отвязка email**: в Telegram в `Профиль` — «Отвязать почту» (`POST /api/auth/email-unlink`, нужен пароль).
 - **Вход в браузере**: `/#/login` → email+пароль (`/api/auth/email-login`).
 
 ## Telegram: ссылка на бота из веб-версии
