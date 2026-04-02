@@ -859,6 +859,97 @@ function renderGroup(state, groupId) {
     .map((m) => userById(state, m.userId)?.name)
     .filter(Boolean);
 
+  const leaderMembers = state.groupMembers.filter((m) => m.groupId === g.id && m.isLeader);
+  const participantMembers = state.groupMembers.filter((m) => m.groupId === g.id && m.isParticipant);
+
+  const peopleOptions = state.users
+    .slice()
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ru"))
+    .map((u) => h("option", { value: u.id }, u.name));
+
+  const manageUI = canEdit
+    ? (() => {
+        const addPersonId = "gm_person";
+        const addPersonNameId = "gm_new_person";
+        const myLeadersCount = leaderMembers.length;
+
+        const onAddNewPerson = () => {
+          const nm = (document.getElementById(addPersonNameId)?.value || "").trim();
+          if (!nm) return alert("Введите имя человека.");
+          state.users.push({ id: uid("u"), name: nm, profile: {} });
+          renderApp();
+        };
+
+        const onSetLeader = async () => {
+          const userId = document.getElementById(addPersonId)?.value || "";
+          if (!userId) return alert("Выберите человека.");
+          if (userId === state.meId) {
+            // already me
+          }
+          upsertGroupMembership(state, g.id, userId, { asLeader: true, asParticipant: false });
+          await saveState(state);
+          renderApp();
+        };
+
+        const onSetParticipant = async () => {
+          const userId = document.getElementById(addPersonId)?.value || "";
+          if (!userId) return alert("Выберите человека.");
+          upsertGroupMembership(state, g.id, userId, { asLeader: false, asParticipant: true });
+          await saveState(state);
+          renderApp();
+        };
+
+        const onRemoveMember = async () => {
+          const userId = document.getElementById(addPersonId)?.value || "";
+          if (!userId) return alert("Выберите человека.");
+          const isLeader = leaderMembers.some((m) => m.userId === userId);
+          if (isLeader && myLeadersCount <= 1) {
+            return alert("Нельзя убрать последнего ведущего группы. Сделайте хотя бы одного ведущего.");
+          }
+          state.groupMembers = state.groupMembers.filter((m) => !(m.groupId === g.id && m.userId === userId));
+          await saveState(state);
+          renderApp();
+        };
+
+        const onDeleteGroup = async () => {
+          if (!confirm("Удалить группу и все встречи внутри неё? Это действие нельзя отменить.")) return;
+          await deleteGroup(state, g.id);
+          location.hash = "#/groups";
+          renderApp();
+        };
+
+        return h("div", { class: "card" }, [
+          h("div", { class: "sectionTitle" }, "Управление группой"),
+          h("div", { class: "small" }, "Добавляйте соведущих и участников. Интерфейс сделан простым, чтобы было удобно пользователям."),
+          h("div", { class: "hr" }),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: addPersonId }, "Выберите человека из списка"),
+            h("select", { id: addPersonId }, [
+              h("option", { value: "" }, "— выберите —"),
+              ...peopleOptions,
+            ]),
+          ]),
+          h("div", { class: "actions profile-actions" }, [
+            h("button", { class: "btn primary", onclick: onSetLeader }, "Сделать ведущим"),
+            h("button", { class: "btn primary", onclick: onSetParticipant }, "Сделать участником"),
+            h("button", { class: "btn danger", onclick: onRemoveMember }, "Удалить из группы"),
+          ]),
+          h("div", { class: "hr" }),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: addPersonNameId }, "Если человека ещё нет — добавьте по имени"),
+            h("input", { id: addPersonNameId, placeholder: "Например: Мария" }),
+          ]),
+          h("div", { class: "actions profile-actions" }, [
+            h("button", { class: "btn", onclick: onAddNewPerson }, "Добавить человека в систему"),
+          ]),
+          h("div", { class: "hr" }),
+          h("div", { class: "actions profile-actions" }, [
+            h("button", { class: "btn danger", onclick: onDeleteGroup }, "Удалить группу"),
+          ]),
+        ]);
+      })()
+    : null;
+
   return h("div", {}, [
     topbar(g.name, g.type, null),
     h("div", { class: "content" }, [
@@ -878,6 +969,7 @@ function renderGroup(state, groupId) {
       h("div", { class: "card" }, [
         participants.length ? h("div", { class: "lines" }, participants.map((name) => h("div", { class: "line" }, [h("div", { class: "k" }, "•"), h("div", {}, name)]))) : h("div", { class: "empty" }, "Список участников пока пуст."),
       ]),
+      manageUI,
       h("div", { class: "actions" }, [
         h("button", { class: "btn", onclick: () => history.back() }, "Назад"),
       ]),
@@ -933,16 +1025,23 @@ function renderNewGroup(state) {
   const nameId = "ng_name";
   const typeId = "ng_type";
   const colorId = "ng_color";
+  const myRoleId = "ng_my_role";
 
   const onSave = async () => {
     const name = (document.getElementById(nameId)?.value || "").trim();
     const type = document.getElementById(typeId)?.value || "другое";
     const color = document.getElementById(colorId)?.value || "#7aa7ff";
+    const myRole = document.getElementById(myRoleId)?.value || "leader";
     if (!name) return alert("Введите название группы.");
 
     const g = { id: uid("g"), name, type, color };
     state.groups.push(g);
-    state.groupMembers.push({ groupId: g.id, userId: state.meId, isLeader: true, isParticipant: false });
+    state.groupMembers.push({
+      groupId: g.id,
+      userId: state.meId,
+      isLeader: myRole === "leader",
+      isParticipant: myRole === "participant",
+    });
     await saveState(state);
     location.hash = `#/group?id=${encodeURIComponent(g.id)}`;
   };
@@ -965,6 +1064,13 @@ function renderNewGroup(state) {
           h("div", { class: "field" }, [
             h("label", { class: "label", for: typeId }, "Тип"),
             typeSel,
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: myRoleId }, "Моя роль в группе"),
+            h("select", { id: myRoleId }, [
+              h("option", { value: "leader", selected: true }, "Я веду (ведущий)"),
+              h("option", { value: "participant" }, "Я участник"),
+            ]),
           ]),
           h("div", { class: "field" }, [
             h("label", { class: "label", for: colorId }, "Цвет"),
@@ -1226,6 +1332,30 @@ async function deleteSession(state, sessionId) {
   const idx = state.sessions.findIndex((x) => x.id === sessionId);
   if (idx === -1) return;
   state.sessions.splice(idx, 1);
+  await saveState(state);
+}
+
+function getGroupMemberEntries(state, groupId) {
+  return state.groupMembers.filter((m) => m.groupId === groupId);
+}
+
+function getGroupLeaderIds(state, groupId) {
+  return getGroupMemberEntries(state, groupId).filter((m) => m.isLeader).map((m) => m.userId);
+}
+
+function upsertGroupMembership(state, groupId, userId, { asLeader, asParticipant }) {
+  const existingIdx = state.groupMembers.findIndex((m) => m.groupId === groupId && m.userId === userId);
+  const isLeader = Boolean(asLeader);
+  const isParticipant = Boolean(asParticipant);
+  const next = { groupId, userId, isLeader, isParticipant };
+  if (existingIdx === -1) state.groupMembers.push(next);
+  else state.groupMembers[existingIdx] = next;
+}
+
+async function deleteGroup(state, groupId) {
+  state.groups = state.groups.filter((g) => g.id !== groupId);
+  state.groupMembers = state.groupMembers.filter((m) => m.groupId !== groupId);
+  state.sessions = state.sessions.filter((s) => s.groupId !== groupId);
   await saveState(state);
 }
 
