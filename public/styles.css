@@ -17,15 +17,23 @@
 }
 
 *{box-sizing:border-box}
-html,body{height:100%}
+html{
+  min-height:100%;
+}
 body{
   margin:0;
+  min-height:100%;
+  min-height:100dvh;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Noto Sans", "Liberation Sans", sans-serif;
   color:var(--text);
-  background:
-    radial-gradient(900px 500px at 20% 0%, rgba(122,167,255,.16), transparent 60%),
-    radial-gradient(900px 500px at 90% 10%, rgba(85,214,145,.10), transparent 60%),
-    var(--bg);
+  background-color:var(--bg);
+  /* fixed = без «стыков» при скролле длинных страниц; no-repeat = градиенты не плиткой */
+  background-image:
+    radial-gradient(ellipse 1200px 520px at 18% -8%, rgba(122,167,255,.17), transparent 58%),
+    radial-gradient(ellipse 980px 460px at 88% 12%, rgba(85,214,145,.11), transparent 56%),
+    radial-gradient(ellipse 900px 480px at 50% 108%, rgba(122,167,255,.07), transparent 52%);
+  background-repeat:no-repeat;
+  background-attachment:fixed;
 }
 
 .app{
