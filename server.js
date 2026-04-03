@@ -140,6 +140,9 @@ function validateState(s) {
   if (!Array.isArray(s.groups)) return "groups должен быть массивом";
   if (!Array.isArray(s.groupMembers)) return "groupMembers должен быть массивом";
   if (!Array.isArray(s.sessions)) return "sessions должен быть массивом";
+  for (const u of s.users) {
+    if (u && u.clientAnamnesis != null && typeof u.clientAnamnesis !== "string") return "clientAnamnesis должен быть строкой";
+  }
   for (const ses of s.sessions) {
     if (!ses.id || !ses.groupId) return "У сессии нужны id и groupId";
     if (!Array.isArray(ses.blocks) || !Array.isArray(ses.leaders)) return "У сессии нужны blocks и leaders";

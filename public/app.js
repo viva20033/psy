@@ -495,6 +495,60 @@ function sessionFirstDate(session) {
   return dates[0] || "9999-99-99";
 }
 
+function todayISOLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** Все блоки с известной датой и каждая дата раньше сегодняшнего дня (локальный календарь). */
+function sessionIsFullyPast(session) {
+  const today = todayISOLocal();
+  const dated = session.blocks.filter((b) => b.date && tryParseISODate(b.date));
+  if (dated.length === 0) return false;
+  const allBlocksHaveIsoDate = session.blocks.length > 0 && session.blocks.every((b) => b.date && tryParseISODate(b.date));
+  if (!allBlocksHaveIsoDate) return false;
+  return session.blocks.every((b) => b.date < today);
+}
+
+function myClientUserIds(state) {
+  const ids = new Set();
+  for (const g of state.groups) {
+    if (g.type !== "личная") continue;
+    if (!isLeaderInGroup(state, g.id, state.meId)) continue;
+    for (const m of state.groupMembers) {
+      if (m.groupId !== g.id || !m.isParticipant) continue;
+      if (m.userId === state.meId) continue;
+      ids.add(m.userId);
+    }
+  }
+  return [...ids];
+}
+
+function sessionsForClientConsultation(state, clientUserId) {
+  const myLeadPersonal = new Set(
+    state.groups.filter((g) => g.type === "личная" && isLeaderInGroup(state, g.id, state.meId)).map((g) => g.id)
+  );
+  const clientParticipantIn = new Set(
+    state.groupMembers.filter((m) => m.userId === clientUserId && m.isParticipant).map((m) => m.groupId)
+  );
+  const groupIds = [...myLeadPersonal].filter((gid) => clientParticipantIn.has(gid));
+  const gset = new Set(groupIds);
+  return state.sessions
+    .filter((s) => gset.has(s.groupId))
+    .slice()
+    .sort((a, b) => sessionFirstDate(b).localeCompare(sessionFirstDate(a)));
+}
+
+function sessionDynamicsSnippet(s) {
+  const t = (s.theme || "").trim();
+  const sum = (s.summary || "").trim();
+  const n = (s.note || "").trim();
+  const pick = t || sum || n || "";
+  if (!pick) return "—";
+  const one = pick.split("\n")[0];
+  return one.length > 120 ? `${one.slice(0, 117)}…` : one;
+}
+
 function sessionDayLabel(session, idx) {
   const b = session.blocks[idx];
   return `${formatDateRu(b.date)} — ${formatTimeRange(b.startTime, b.endTime)}`;
@@ -582,7 +636,6 @@ function nav(current) {
       mk("#/upcoming", "Ближайшее", "upcoming"),
       mk("#/groups", "Группы", "groups"),
       mk("#/create", "Создать", "create"),
-      mk("#/people", "Контакты", "people"),
       mk("#/profile", "Профиль", "profile"),
     ]),
   ]);
@@ -621,7 +674,7 @@ function topbar(title, subtitle, pills) {
 
 function renderUpcoming(state, mode = "lead") {
   const me = getMe(state);
-  const subtitle = `${me?.name ?? "Пользователь"} • телефонный прототип`;
+  const subtitle = `${me?.name ?? "Пользователь"} • только предстоящие; прошедшие — в «Вид на год»`;
 
   const pills = [
     {
@@ -638,12 +691,13 @@ function renderUpcoming(state, mode = "lead") {
 
   const sessions = state.sessions
     .filter((s) => sessionVisibleForMe(state, s, mode))
+    .filter((s) => !sessionIsFullyPast(s))
     .slice()
     .sort((a, b) => sessionFirstDate(a).localeCompare(sessionFirstDate(b)));
 
   const list =
     sessions.length === 0
-      ? h("div", { class: "empty" }, "Пока нет встреч в расписании.")
+      ? h("div", { class: "empty" }, "Нет предстоящих встреч. Завершённые и архив смотрите в «Вид на год».")
       : h(
           "div",
           {},
@@ -1099,37 +1153,11 @@ function renderCreate(state) {
         ]),
       ]),
       h("div", { class: "card" }, [
-        h("div", { class: "sectionTitle" }, "Контакты"),
-        h("div", { class: "small" }, "Переименовать или удалить людей из справочника; при добавлении по имени дубликаты не создаются."),
-        h("div", { class: "actions" }, [
-          h("button", { class: "btn", onclick: () => (location.hash = "#/people") }, "Открыть контакты"),
-        ]),
-      ]),
-      h("div", { class: "card" }, [
         h("div", { class: "groupName" }, "Что вы хотите сделать?"),
         h("div", { class: "small" }, "Данные сохраняются на сервере (SQLite). Сценарий: плавающие даты и время «уточним позже»."),
         h("div", { class: "actions" }, [
           h("button", { class: "btn primary", onclick: () => (location.hash = "#/wizard") }, "Запланировать встречу группы"),
           h("button", { class: "btn", onclick: () => (location.hash = "#/new-consultation") }, "Личная консультация"),
-        ]),
-      ]),
-      h("div", { class: "card" }, [
-        h("div", { class: "sectionTitle" }, "Быстрое тестирование"),
-        h("div", { class: "small" }, "Сброс на сервере к демо-набору (все текущие правки пропадут)."),
-        h("div", { class: "actions" }, [
-          h("button", { class: "btn danger", onclick: async () => {
-            try {
-              const r = await fetch(`${API_BASE}/api/reset-demo`, { method: "POST" });
-              if (!r.ok) throw new Error(await r.text());
-              state = await r.json();
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-              location.hash = "#/upcoming";
-              renderApp();
-            } catch (e) {
-              alert("Не удалось сбросить на сервере. Запустите npm start или проверьте сеть.");
-              console.error(e);
-            }
-          } }, "Сбросить демо на сервере"),
         ]),
       ]),
     ]),
@@ -1375,6 +1403,14 @@ function renderProfile(state) {
           h("div", { class: "actions" }, [
             h("button", { class: "btn primary", onclick: onSaveProfile }, "Сохранить профиль"),
           ]),
+        ]),
+      ]),
+      h("div", { class: "card" }, [
+        h("div", { class: "sectionTitle" }, "Справочник и клиенты"),
+        h("div", { class: "small" }, "Контакты и карточки клиентов — здесь, чтобы нижнее меню оставалось короче."),
+        h("div", { class: "actions profile-actions" }, [
+          h("button", { class: "btn", onclick: () => (location.hash = "#/people") }, "Контакты"),
+          h("button", { class: "btn primary", onclick: () => (location.hash = "#/clients") }, "Мои клиенты"),
         ]),
       ]),
       profileLinkedEmail && !canLinkEmail
@@ -2160,6 +2196,136 @@ function renderWizard(state, presetGroupId) {
   return root;
 }
 
+function renderClients(state) {
+  const ids = myClientUserIds(state);
+  const clients = ids
+    .map((id) => userById(state, id))
+    .filter(Boolean)
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ru"));
+
+  const list =
+    clients.length === 0
+      ? h(
+          "div",
+          { class: "empty" },
+          "Здесь появятся люди из личных консультаций, где вы — терапевт (ведущий). Создайте консультацию: «Создать» → «Личная консультация»."
+        )
+      : h(
+          "div",
+          {},
+          clients.map((u) =>
+            h(
+              "div",
+              {
+                class: "listCard",
+                role: "button",
+                tabindex: "0",
+                onclick: () => (location.hash = `#/client?id=${encodeURIComponent(u.id)}`),
+                onkeydown: (e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    location.hash = `#/client?id=${encodeURIComponent(u.id)}`;
+                  }
+                },
+              },
+              [
+                h("div", {}, [
+                  h("div", { class: "listTitle" }, u.name || "Без имени"),
+                  h("div", { class: "listMeta" }, "Анамнез и записи по встречам"),
+                ]),
+                h("div", { class: "chev" }, "›"),
+              ]
+            )
+          )
+        );
+
+  return h("div", {}, [
+    topbar("Мои клиенты", "Общий анамнез и краткая динамика по сессиям — внутри карточки клиента.", null),
+    h("div", { class: "content" }, [
+      list,
+      h("div", { class: "actions", style: "margin-top:14px;" }, [
+        h("button", { class: "btn", onclick: () => (location.hash = "#/profile") }, "К профилю"),
+      ]),
+    ]),
+    nav("profile"),
+  ]);
+}
+
+function renderClient(state, userId) {
+  if (!userId) return renderNotFound("Клиент не указан");
+  if (!myClientUserIds(state).includes(userId)) return renderNotFound("Нет доступа или клиент не найден");
+  const u = userById(state, userId);
+  if (!u) return renderNotFound("Клиент не найден");
+
+  const anamId = "cl_anam";
+  const sessions = sessionsForClientConsultation(state, userId);
+
+  const onSaveAnam = async () => {
+    const text = document.getElementById(anamId)?.value ?? "";
+    const idx = state.users.findIndex((x) => x.id === userId);
+    if (idx < 0) return;
+    state.users[idx] = { ...state.users[idx], clientAnamnesis: text };
+    await saveState(state);
+    alert("Анамнез сохранён.");
+    renderApp();
+  };
+
+  const sessionWhenLabel = (s) => {
+    const d0 = sessionFirstDate(s);
+    return d0 === "9999-99-99" ? "Дата уточняется" : formatDateRu(d0);
+  };
+
+  return h("div", {}, [
+    topbar(u.name || "Клиент", "Личная консультация • ваши заметки", null),
+    h("div", { class: "content" }, [
+      h("div", { class: "card" }, [
+        h("div", { class: "sectionTitle" }, "Анамнез / контекст"),
+        h("div", { class: "small" }, "Общие сведения на человека (для всех консультаций с ним в этом кабинете)."),
+        h("textarea", { id: anamId, placeholder: "Запрос, обстоятельства, важное…" }, u.clientAnamnesis ?? ""),
+        h("div", { class: "actions profile-actions" }, [
+          h("button", { class: "btn primary", onclick: onSaveAnam }, "Сохранить анамнез"),
+        ]),
+      ]),
+      h("div", { class: "sectionTitle", style: "margin-top:8px;" }, "Встречи и динамика"),
+      h("div", { class: "small", style: "margin-bottom:10px;" }, "Строка из темы, резюме или общей заметки; полный текст — во встрече."),
+      sessions.length === 0
+        ? h("div", { class: "empty" }, "Пока нет встреч в консультации с этим человеком.")
+        : h(
+            "div",
+            {},
+            sessions.map((s) => {
+              const g = groupById(state, s.groupId);
+              const open = () => (location.hash = `#/session?id=${encodeURIComponent(s.id)}`);
+              return h(
+                "div",
+                {
+                  class: "card",
+                  style: "margin-bottom:10px; cursor:pointer;",
+                  role: "button",
+                  tabindex: "0",
+                  onclick: open,
+                  onkeydown: (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      open();
+                    }
+                  },
+                },
+                [
+                  h("div", { class: "groupName" }, `${sessionWhenLabel(s)} • ${g?.name ?? "Консультация"}`),
+                  h("div", { class: "small", style: "white-space:pre-wrap; opacity:.9;" }, sessionDynamicsSnippet(s)),
+                ]
+              );
+            })
+          ),
+      h("div", { class: "actions" }, [
+        h("button", { class: "btn", onclick: () => (location.hash = "#/clients") }, "К списку клиентов"),
+      ]),
+    ]),
+    nav("profile"),
+  ]);
+}
+
 function renderPeople(state) {
   const list = state.users.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "", "ru"));
 
@@ -2214,7 +2380,7 @@ function renderPeople(state) {
   return h("div", {}, [
     topbar("Контакты", "Справочник людей: правка имени и удаление. Одинаковые имена при добавлении больше не плодятся.", null),
     h("div", { class: "content" }, rows),
-    nav("people"),
+    nav("profile"),
   ]);
 }
 
@@ -2275,6 +2441,8 @@ function renderApp() {
   else if (path === "/group") app.appendChild(renderGroup(state, params.get("id")));
   else if (path === "/create") app.appendChild(renderCreate(state));
   else if (path === "/people") app.appendChild(renderPeople(state));
+  else if (path === "/clients") app.appendChild(renderClients(state));
+  else if (path === "/client") app.appendChild(renderClient(state, params.get("id")));
   else if (path === "/profile") app.appendChild(renderProfile(state));
   else if (path === "/wizard") app.appendChild(renderWizard(state, params.get("groupId")));
   else if (path === "/session") app.appendChild(renderSession(state, params.get("id")));
