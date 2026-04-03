@@ -276,7 +276,7 @@ body{
   gap:8px;
 }
 .label{ font-weight:850; color:var(--muted); font-size:12px; letter-spacing:.2px;}
-select,input{
+select,input,textarea{
   min-height:var(--tap);
   border-radius:14px;
   border:1px solid var(--border);
@@ -285,7 +285,13 @@ select,input{
   padding:12px 12px;
   font-size:16px;
 }
-input::placeholder{ color:rgba(233,238,252,.45); }
+textarea{
+  min-height:100px;
+  resize:vertical;
+  font-family:inherit;
+  line-height:1.45;
+}
+input::placeholder,textarea::placeholder{ color:rgba(233,238,252,.45); }
 
 .grid2{
   display:grid;
@@ -301,7 +307,8 @@ input::placeholder{ color:rgba(233,238,252,.45); }
   padding-right:max(14px, env(safe-area-inset-right));
 }
 .profile-form .field input,
-.profile-form .field select{
+.profile-form .field select,
+.profile-form .field textarea{
   width:100%;
   max-width:100%;
   min-width:0;

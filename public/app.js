@@ -23,6 +23,11 @@ function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
 
+/** Поля сессии для заметок терапевта (этап 1 MVP). */
+function emptySessionFields() {
+  return { theme: "", summary: "", homework: "", privateNotes: "" };
+}
+
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
@@ -920,7 +925,10 @@ function renderGroup(state, groupId) {
 
         return h("div", { class: "card" }, [
           h("div", { class: "sectionTitle" }, "Управление группой"),
-          h("div", { class: "small" }, "Добавляйте соведущих и участников. Интерфейс сделан простым, чтобы было удобно пользователям."),
+          h("div", { class: "small" }, [
+            "Ведущий — планирует встречи и видит приватные заметки. Участник — в списке группы, без прав редактирования. ",
+            "Пока данные только в вашем кабинете; позже приглашённые смогут видеть группу у себя автоматически.",
+          ]),
           h("div", { class: "hr" }),
           h("div", { class: "field" }, [
             h("label", { class: "label", for: addPersonId }, "Выберите человека из списка"),
@@ -953,6 +961,11 @@ function renderGroup(state, groupId) {
   return h("div", {}, [
     topbar(g.name, g.type, null),
     h("div", { class: "content" }, [
+      canEdit
+        ? h("div", { class: "actions", style: "margin-bottom:10px;" }, [
+            h("button", { class: "btn", onclick: () => (location.hash = `#/edit-group?id=${encodeURIComponent(g.id)}`) }, "Изменить группу"),
+          ])
+        : null,
       h("div", { class: "sectionTitle" }, "Ближайшие встречи"),
       sessions.length ? h("div", {}, sessions.slice(0, 3).map((s) => sessionCard(state, s, { showEdit: canEdit }))) : h("div", { class: "empty" }, "Пока нет встреч."),
       canEdit
@@ -1078,6 +1091,61 @@ function renderNewGroup(state) {
           ]),
           h("div", { class: "actions" }, [
             h("button", { class: "btn primary", onclick: onSave }, "Создать"),
+            h("button", { class: "btn", onclick: () => history.back() }, "Отмена"),
+          ]),
+        ]),
+      ]),
+    ]),
+    nav("groups"),
+  ]);
+}
+
+function renderEditGroup(state, groupId) {
+  const g = groupById(state, groupId);
+  if (!g) return renderNotFound("Группа не найдена");
+  if (!isLeaderInGroup(state, g.id, state.meId)) return renderNotFound("Нет прав на редактирование");
+
+  const nameId = "eg_name";
+  const typeId = "eg_type";
+  const colorId = "eg_color";
+
+  const onSave = async () => {
+    const name = (document.getElementById(nameId)?.value || "").trim();
+    const type = document.getElementById(typeId)?.value || "другое";
+    const color = document.getElementById(colorId)?.value || "#7aa7ff";
+    if (!name) return alert("Введите название группы.");
+    const idx = state.groups.findIndex((x) => x.id === g.id);
+    if (idx === -1) return;
+    state.groups[idx] = { ...state.groups[idx], name, type, color };
+    await saveState(state);
+    location.hash = `#/group?id=${encodeURIComponent(g.id)}`;
+  };
+
+  const typeSel = h(
+    "select",
+    { id: typeId },
+    GROUP_TYPES.map((t) => h("option", { value: t.id, selected: t.id === g.type }, t.label))
+  );
+
+  return h("div", {}, [
+    topbar("Изменить группу", g.name, null),
+    h("div", { class: "content" }, [
+      h("div", { class: "card" }, [
+        h("div", { class: "form" }, [
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: nameId }, "Название"),
+            h("input", { id: nameId, value: g.name || "" }),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: typeId }, "Тип"),
+            typeSel,
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: colorId }, "Цвет"),
+            h("input", { id: colorId, type: "color", value: g.color || "#7aa7ff" }),
+          ]),
+          h("div", { class: "actions" }, [
+            h("button", { class: "btn primary", onclick: onSave }, "Сохранить"),
             h("button", { class: "btn", onclick: () => history.back() }, "Отмена"),
           ]),
         ]),
@@ -1391,6 +1459,30 @@ function renderSession(state, sessionId) {
         h("div", { class: "lines" }, s.blocks.map((b) => h("div", { class: "line" }, [h("div", { class: "k" }, "День"), h("div", {}, `${formatDateRu(b.date)} — ${formatTimeRange(b.startTime, b.endTime)}`)]))),
         h("div", { class: "small" }, `Ведущие: ${leaders}`),
         s.note ? h("div", { class: "small" }, s.note) : null,
+        (s.theme || "").trim()
+          ? h("div", { class: "card", style: "margin-top:12px;" }, [
+              h("div", { class: "sectionTitle" }, "Тема встречи"),
+              h("div", { class: "small", style: "margin-top:0; white-space:pre-wrap;" }, s.theme.trim()),
+            ])
+          : null,
+        (s.summary || "").trim()
+          ? h("div", { class: "card", style: "margin-top:12px;" }, [
+              h("div", { class: "sectionTitle" }, "Краткое резюме"),
+              h("div", { class: "small", style: "margin-top:0; white-space:pre-wrap;" }, s.summary.trim()),
+            ])
+          : null,
+        (s.homework || "").trim()
+          ? h("div", { class: "card", style: "margin-top:12px;" }, [
+              h("div", { class: "sectionTitle" }, "Домашка / договорённости"),
+              h("div", { class: "small", style: "margin-top:0; white-space:pre-wrap;" }, s.homework.trim()),
+            ])
+          : null,
+        canEdit && (s.privateNotes || "").trim()
+          ? h("div", { class: "card", style: "margin-top:12px; border-color: rgba(122,167,255,.35);" }, [
+              h("div", { class: "sectionTitle" }, "Приватные заметки (только ведущие)"),
+              h("div", { class: "small", style: "margin-top:0; white-space:pre-wrap;" }, s.privateNotes.trim()),
+            ])
+          : null,
         h("div", { class: "actions" }, [
           canEdit ? h("button", { class: "btn primary", onclick: () => (location.hash = `#/edit-session?id=${encodeURIComponent(s.id)}`) }, "Изменить") : null,
           canEdit
@@ -1452,11 +1544,30 @@ function renderEditSession(state, sessionId) {
         h("div", { class: "sectionTitle" }, "Ведущие этой встречи"),
         editLeadersUI(state, s),
         h("div", { class: "hr" }),
-        h("div", { class: "sectionTitle" }, "Заметка"),
-        (() => {
-          const inp = h("input", { id: "note", value: s.note ?? "", placeholder: "Например: тема встречи, ссылка, примечание" });
-          return inp;
-        })(),
+        h("div", { class: "sectionTitle" }, "Короткая заметка (видна всем)"),
+        h("div", { class: "hint" }, "Одна строка: ссылка, напоминание, что увидят и участники."),
+        h("input", { id: "note", value: s.note ?? "", placeholder: "Например: ссылка на Zoom, общее напоминание" }),
+        h("div", { class: "hr" }),
+        h("div", { class: "sectionTitle" }, "Тема и содержание"),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: "sess_theme" }, "Тема встречи"),
+          h("textarea", { id: "sess_theme", placeholder: "О чём встреча, фокус" }, s.theme ?? ""),
+        ]),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: "sess_summary" }, "Краткое резюме"),
+          h("textarea", { id: "sess_summary", placeholder: "Итоги, важные моменты" }, s.summary ?? ""),
+        ]),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: "sess_homework" }, "Домашка / договорённости"),
+          h("textarea", { id: "sess_homework", placeholder: "Что договорились сделать до следующего раза" }, s.homework ?? ""),
+        ]),
+        h("div", { class: "hr" }),
+        h("div", { class: "sectionTitle" }, "Только для ведущих"),
+        h("div", { class: "hint" }, "Участники эту часть не увидят. Подходит для личных наблюдений."),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: "sess_private" }, "Приватные заметки"),
+          h("textarea", { id: "sess_private", placeholder: "Для себя: процесс, риски, супервизия…" }, s.privateNotes ?? ""),
+        ]),
         h("div", { class: "actions" }, [
           h("button", { class: "btn primary", onclick: async () => onSaveEdit(state, s) }, "Сохранить"),
           h(
@@ -1547,6 +1658,10 @@ function editLeadersUI(state, session) {
 async function onSaveEdit(state, session) {
   const status = document.getElementById("status")?.value || session.status;
   const note = document.getElementById("note")?.value ?? "";
+  const theme = document.getElementById("sess_theme")?.value ?? "";
+  const summary = document.getElementById("sess_summary")?.value ?? "";
+  const homework = document.getElementById("sess_homework")?.value ?? "";
+  const privateNotes = document.getElementById("sess_private")?.value ?? "";
 
   const blocks = session.blocks.map((b, idx) => {
     const date = tryParseISODate(document.getElementById(`d_${idx}`)?.value) || b.date;
@@ -1566,7 +1681,7 @@ async function onSaveEdit(state, session) {
     return;
   }
 
-  const updated = { ...session, status, note, blocks, leaders };
+  const updated = { ...session, status, note, theme, summary, homework, privateNotes, blocks, leaders };
   const conflicts = computeConflicts(state, updated);
   if (conflicts.length) {
     const msg = conflicts.slice(0, 6).join("\n") + (conflicts.length > 6 ? "\n…" : "");
@@ -1627,6 +1742,7 @@ function renderNewConsultation(state) {
       ],
       blocks: [{ id: uid("b"), date: "", startTime: "", endTime: "" }],
       note: note || "",
+      ...emptySessionFields(),
     };
     state.sessions.push(s);
 
@@ -1830,6 +1946,7 @@ function renderWizard(state, presetGroupId) {
       leaders,
       blocks: blocks.map((b) => ({ ...b })),
       note: "",
+      ...emptySessionFields(),
     };
 
     const conflicts = computeConflicts(state, draft);
@@ -1903,6 +2020,10 @@ function renderApp() {
   }
   if (path === "/new-group") {
     app.appendChild(renderNewGroup(state));
+    return;
+  }
+  if (path === "/edit-group") {
+    app.appendChild(renderEditGroup(state, params.get("id")));
     return;
   }
   if (path === "/new-consultation") {
