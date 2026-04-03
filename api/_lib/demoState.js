@@ -127,8 +127,13 @@ export function validateState(s) {
   for (const ses of s.sessions) {
     if (!ses.id || !ses.groupId) return "У сессии нужны id и groupId";
     if (!Array.isArray(ses.blocks) || !Array.isArray(ses.leaders)) return "У сессии нужны blocks и leaders";
-    for (const key of ["note", "theme", "summary", "homework", "privateNotes"]) {
-      if (ses[key] !== undefined && typeof ses[key] !== "string") return `Поле сессии ${key} должно быть строкой`;
+    for (const key of ["note", "theme", "summary", "privateNotes", "weeklyStart", "weeklyEnd"]) {
+      if (ses[key] !== undefined && ses[key] !== null && typeof ses[key] !== "string") return `Поле сессии ${key} должно быть строкой`;
+    }
+    if (ses.weeklyDay !== undefined && ses.weeklyDay !== null) {
+      if (typeof ses.weeklyDay !== "number" || !Number.isInteger(ses.weeklyDay) || ses.weeklyDay < 0 || ses.weeklyDay > 6) {
+        return "weeklyDay должен быть целым 0–6 (день недели)";
+      }
     }
   }
   return null;

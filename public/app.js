@@ -25,7 +25,7 @@ function uid(prefix = "id") {
 
 /** Поля сессии для заметок терапевта (этап 1 MVP). */
 function emptySessionFields() {
-  return { theme: "", summary: "", homework: "", privateNotes: "" };
+  return { theme: "", summary: "", privateNotes: "" };
 }
 
 function pad2(n) {
@@ -44,6 +44,53 @@ function formatDateRu(iso) {
 function formatTimeRange(start, end) {
   if (!start || !end) return "время уточним";
   return `${start}–${end}`;
+}
+
+const RU_DOW_SHORT = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const RU_DOW_FULL = ["Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"];
+
+function formatWeeklySlotLine(session) {
+  if (session.weeklyDay == null || typeof session.weeklyDay !== "number") return null;
+  const d = RU_DOW_SHORT[session.weeklyDay];
+  if (!d) return null;
+  const tr = formatTimeRange(session.weeklyStart, session.weeklyEnd);
+  return `Обычно: ${d} · ${tr}`;
+}
+
+function addDaysToIso(iso, deltaDays) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
+}
+
+/** Копия встречи со сдвигом дат блоков; статус «предварительно». Возвращает новую сессию. */
+function cloneSessionShiftDays(state, session, deltaDays) {
+  const blocks = session.blocks.map((b) => {
+    const d = tryParseISODate(b.date);
+    if (!d) return { ...b };
+    return { ...b, date: addDaysToIso(d, deltaDays) };
+  });
+  const copy = {
+    ...session,
+    id: uid("s"),
+    status: "предварительно",
+    blocks,
+    note: session.note ?? "",
+    theme: session.theme ?? "",
+    summary: session.summary ?? "",
+    privateNotes: session.privateNotes ?? "",
+    leaders: session.leaders.map((l) => ({ ...l })),
+  };
+  delete copy.homework;
+  if (typeof session.weeklyDay === "number") copy.weeklyDay = session.weeklyDay;
+  else delete copy.weeklyDay;
+  if (session.weeklyStart) copy.weeklyStart = session.weeklyStart;
+  else delete copy.weeklyStart;
+  if (session.weeklyEnd) copy.weeklyEnd = session.weeklyEnd;
+  else delete copy.weeklyEnd;
+  state.sessions.push(copy);
+  return copy;
 }
 
 function tryParseISODate(s) {
@@ -198,6 +245,13 @@ function buildDemoState() {
   };
 }
 
+function normalizeClientState(state) {
+  if (!state || !Array.isArray(state.sessions)) return;
+  for (const s of state.sessions) {
+    if (s && "homework" in s) delete s.homework;
+  }
+}
+
 async function loadState() {
   try {
     if (!currentUserId) {
@@ -208,11 +262,17 @@ async function loadState() {
     }
     const r = await fetch(`${API_BASE}/api/state`);
     if (!r.ok) throw new Error(await r.text());
-    return await r.json();
+    const st = await r.json();
+    normalizeClientState(st);
+    return st;
   } catch (e) {
     console.warn("Нет ответа от сервера, пробуем локальное хранилище.", e);
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const st = JSON.parse(raw);
+      normalizeClientState(st);
+      return st;
+    }
     const fallback = buildDemoState();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback));
     return fallback;
@@ -522,6 +582,7 @@ function nav(current) {
       mk("#/upcoming", "Ближайшее", "upcoming"),
       mk("#/groups", "Группы", "groups"),
       mk("#/create", "Создать", "create"),
+      mk("#/people", "Контакты", "people"),
       mk("#/profile", "Профиль", "profile"),
     ]),
   ]);
@@ -741,6 +802,7 @@ function sessionCard(state, session, opts = {}) {
 
   const badgeClass = session.status === "подтверждено" ? "badge ok" : "badge warn";
   const badgeText = session.status === "подтверждено" ? "Подтверждено" : "Предварительно";
+  const weeklyLine = formatWeeklySlotLine(session);
 
   return h("div", { class: "card" }, [
     h("div", { class: "row" }, [
@@ -763,6 +825,7 @@ function sessionCard(state, session, opts = {}) {
         ])
       )
     ),
+    weeklyLine ? h("div", { class: "small", style: "opacity:.9;" }, weeklyLine) : null,
     h("div", { class: "small" }, `Ведущие: ${leaders.join(", ")}`),
     session.note ? h("div", { class: "small" }, session.note) : null,
     h("div", { class: "actions" }, [
@@ -848,6 +911,7 @@ function renderGroup(state, groupId) {
   if (!g) return renderNotFound("Группа не найдена");
 
   const canEdit = isLeaderInGroup(state, g.id, state.meId);
+  const canLeaveGroup = !canEdit && isParticipantInGroup(state, g.id, state.meId);
 
   const sessions = state.sessions
     .filter((s) => s.groupId === g.id)
@@ -878,10 +942,19 @@ function renderGroup(state, groupId) {
         const addPersonNameId = "gm_new_person";
         const myLeadersCount = leaderMembers.length;
 
-        const onAddNewPerson = () => {
+        const onAddNewPerson = async () => {
           const nm = (document.getElementById(addPersonNameId)?.value || "").trim();
           if (!nm) return alert("Введите имя человека.");
+          const key = nm.toLowerCase();
+          const existing = state.users.find((u) => (u.name || "").trim().toLowerCase() === key);
+          if (existing) {
+            alert(`Человек «${existing.name}» уже есть в списке. Выберите его в списке «Выберите человека».`);
+            document.getElementById(addPersonNameId).value = "";
+            return;
+          }
           state.users.push({ id: uid("u"), name: nm, profile: {} });
+          document.getElementById(addPersonNameId).value = "";
+          await saveState(state);
           renderApp();
         };
 
@@ -983,6 +1056,29 @@ function renderGroup(state, groupId) {
         participants.length ? h("div", { class: "lines" }, participants.map((name) => h("div", { class: "line" }, [h("div", { class: "k" }, "•"), h("div", {}, name)]))) : h("div", { class: "empty" }, "Список участников пока пуст."),
       ]),
       manageUI,
+      canLeaveGroup
+        ? h("div", { class: "actions", style: "margin-top:12px;" }, [
+            h(
+              "button",
+              {
+                class: "btn danger",
+                onclick: async () => {
+                  if (
+                    !confirm(
+                      "Покинуть группу? Она пропадёт из списка «Где я участник», встречи не будут показываться у вас как у участника."
+                    )
+                  )
+                    return;
+                  state.groupMembers = state.groupMembers.filter((m) => !(m.groupId === g.id && m.userId === state.meId));
+                  await saveState(state);
+                  location.hash = "#/groups";
+                  renderApp();
+                },
+              },
+              "Покинуть группу"
+            ),
+          ])
+        : null,
       h("div", { class: "actions" }, [
         h("button", { class: "btn", onclick: () => history.back() }, "Назад"),
       ]),
@@ -1000,6 +1096,13 @@ function renderCreate(state) {
         h("div", { class: "small" }, "Сначала создайте группу, затем планируйте встречи и добавляйте людей."),
         h("div", { class: "actions" }, [
           h("button", { class: "btn primary", onclick: () => (location.hash = "#/new-group") }, "+ Создать группу"),
+        ]),
+      ]),
+      h("div", { class: "card" }, [
+        h("div", { class: "sectionTitle" }, "Контакты"),
+        h("div", { class: "small" }, "Переименовать или удалить людей из справочника; при добавлении по имени дубликаты не создаются."),
+        h("div", { class: "actions" }, [
+          h("button", { class: "btn", onclick: () => (location.hash = "#/people") }, "Открыть контакты"),
         ]),
       ]),
       h("div", { class: "card" }, [
@@ -1441,6 +1544,7 @@ function renderSession(state, sessionId) {
     .join(", ");
 
   const canEdit = isLeaderInGroup(state, s.groupId, state.meId);
+  const weeklyLine = formatWeeklySlotLine(s);
 
   return h("div", {}, [
     topbar("Встреча", g?.name ?? "Группа", null),
@@ -1457,6 +1561,7 @@ function renderSession(state, sessionId) {
           h("div", { class: s.status === "подтверждено" ? "badge ok" : "badge warn" }, s.status === "подтверждено" ? "Подтверждено" : "Предварительно"),
         ]),
         h("div", { class: "lines" }, s.blocks.map((b) => h("div", { class: "line" }, [h("div", { class: "k" }, "День"), h("div", {}, `${formatDateRu(b.date)} — ${formatTimeRange(b.startTime, b.endTime)}`)]))),
+        weeklyLine ? h("div", { class: "small", style: "opacity:.9;" }, weeklyLine) : null,
         h("div", { class: "small" }, `Ведущие: ${leaders}`),
         s.note ? h("div", { class: "small" }, s.note) : null,
         (s.theme || "").trim()
@@ -1471,12 +1576,6 @@ function renderSession(state, sessionId) {
               h("div", { class: "small", style: "margin-top:0; white-space:pre-wrap;" }, s.summary.trim()),
             ])
           : null,
-        (s.homework || "").trim()
-          ? h("div", { class: "card", style: "margin-top:12px;" }, [
-              h("div", { class: "sectionTitle" }, "Домашка / договорённости"),
-              h("div", { class: "small", style: "margin-top:0; white-space:pre-wrap;" }, s.homework.trim()),
-            ])
-          : null,
         canEdit && (s.privateNotes || "").trim()
           ? h("div", { class: "card", style: "margin-top:12px; border-color: rgba(122,167,255,.35);" }, [
               h("div", { class: "sectionTitle" }, "Приватные заметки (только ведущие)"),
@@ -1485,6 +1584,21 @@ function renderSession(state, sessionId) {
           : null,
         h("div", { class: "actions" }, [
           canEdit ? h("button", { class: "btn primary", onclick: () => (location.hash = `#/edit-session?id=${encodeURIComponent(s.id)}`) }, "Изменить") : null,
+          canEdit
+            ? h(
+                "button",
+                {
+                  class: "btn",
+                  onclick: async () => {
+                    const copy = cloneSessionShiftDays(state, s, 7);
+                    await saveState(state);
+                    location.hash = `#/session?id=${encodeURIComponent(copy.id)}`;
+                    renderApp();
+                  },
+                },
+                "Копия на +7 дней"
+              )
+            : null,
           canEdit
             ? h(
                 "button",
@@ -1541,6 +1655,36 @@ function renderEditSession(state, sessionId) {
         h("div", { class: "sectionTitle" }, "Дни и время"),
         ...s.blocks.map((b, idx) => editBlockUI(b, idx)),
         h("div", { class: "hr" }),
+        h("div", { class: "sectionTitle" }, "Постоянный слот недели"),
+        h("div", { class: "hint" }, "Удобно для годового плана: типичный день и время. Конкретные даты в блоках выше можно менять отдельно."),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: "sess_weekly_dow" }, "День недели"),
+          h(
+            "select",
+            { id: "sess_weekly_dow" },
+            [
+              h("option", { value: "", ...(typeof s.weeklyDay !== "number" ? { selected: true } : {}) }, "— не задано —"),
+              ...[0, 1, 2, 3, 4, 5, 6].map((d) =>
+                h(
+                  "option",
+                  { value: String(d), ...(s.weeklyDay === d ? { selected: true } : {}) },
+                  `${RU_DOW_FULL[d]} (${RU_DOW_SHORT[d]})`
+                )
+              ),
+            ]
+          ),
+        ]),
+        h("div", { class: "grid2" }, [
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: "sess_weekly_start" }, "Обычно с"),
+            h("input", { id: "sess_weekly_start", type: "time", value: s.weeklyStart ?? "" }),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: "sess_weekly_end" }, "Обычно до"),
+            h("input", { id: "sess_weekly_end", type: "time", value: s.weeklyEnd ?? "" }),
+          ]),
+        ]),
+        h("div", { class: "hr" }),
         h("div", { class: "sectionTitle" }, "Ведущие этой встречи"),
         editLeadersUI(state, s),
         h("div", { class: "hr" }),
@@ -1557,10 +1701,6 @@ function renderEditSession(state, sessionId) {
           h("label", { class: "label", for: "sess_summary" }, "Краткое резюме"),
           h("textarea", { id: "sess_summary", placeholder: "Итоги, важные моменты" }, s.summary ?? ""),
         ]),
-        h("div", { class: "field" }, [
-          h("label", { class: "label", for: "sess_homework" }, "Домашка / договорённости"),
-          h("textarea", { id: "sess_homework", placeholder: "Что договорились сделать до следующего раза" }, s.homework ?? ""),
-        ]),
         h("div", { class: "hr" }),
         h("div", { class: "sectionTitle" }, "Только для ведущих"),
         h("div", { class: "hint" }, "Участники эту часть не увидят. Подходит для личных наблюдений."),
@@ -1570,6 +1710,19 @@ function renderEditSession(state, sessionId) {
         ]),
         h("div", { class: "actions" }, [
           h("button", { class: "btn primary", onclick: async () => onSaveEdit(state, s) }, "Сохранить"),
+          h(
+            "button",
+            {
+              class: "btn",
+              onclick: async () => {
+                const copy = cloneSessionShiftDays(state, s, 7);
+                await saveState(state);
+                location.hash = `#/session?id=${encodeURIComponent(copy.id)}`;
+                renderApp();
+              },
+            },
+            "Копия на +7 дней"
+          ),
           h(
             "button",
             {
@@ -1590,6 +1743,7 @@ function renderEditSession(state, sessionId) {
           ),
           h("button", { class: "btn", onclick: () => history.back() }, "Отмена"),
         ]),
+        h("div", { class: "hint", style: "margin-top:8px;" }, "«Копия на +7 дней» берёт последнее сохранённое состояние встречи (если меняли форму — сначала «Сохранить»)."),
       ]),
     ]),
     nav("upcoming"),
@@ -1660,8 +1814,16 @@ async function onSaveEdit(state, session) {
   const note = document.getElementById("note")?.value ?? "";
   const theme = document.getElementById("sess_theme")?.value ?? "";
   const summary = document.getElementById("sess_summary")?.value ?? "";
-  const homework = document.getElementById("sess_homework")?.value ?? "";
   const privateNotes = document.getElementById("sess_private")?.value ?? "";
+  const wdRaw = document.getElementById("sess_weekly_dow")?.value ?? "";
+  let weeklyDay;
+  if (wdRaw === "") weeklyDay = undefined;
+  else {
+    const n = Number(wdRaw);
+    weeklyDay = Number.isInteger(n) && n >= 0 && n <= 6 ? n : undefined;
+  }
+  const weeklyStart = (document.getElementById("sess_weekly_start")?.value ?? "").trim();
+  const weeklyEnd = (document.getElementById("sess_weekly_end")?.value ?? "").trim();
 
   const blocks = session.blocks.map((b, idx) => {
     const date = tryParseISODate(document.getElementById(`d_${idx}`)?.value) || b.date;
@@ -1681,7 +1843,17 @@ async function onSaveEdit(state, session) {
     return;
   }
 
-  const updated = { ...session, status, note, theme, summary, homework, privateNotes, blocks, leaders };
+  const updated = { ...session, status, note, theme, summary, privateNotes, blocks, leaders };
+  delete updated.homework;
+  if (weeklyDay === undefined) {
+    delete updated.weeklyDay;
+    delete updated.weeklyStart;
+    delete updated.weeklyEnd;
+  } else {
+    updated.weeklyDay = weeklyDay;
+    updated.weeklyStart = weeklyStart;
+    updated.weeklyEnd = weeklyEnd;
+  }
   const conflicts = computeConflicts(state, updated);
   if (conflicts.length) {
     const msg = conflicts.slice(0, 6).join("\n") + (conflicts.length > 6 ? "\n…" : "");
@@ -1707,8 +1879,12 @@ function renderNewConsultation(state) {
     const note = (document.getElementById(noteId)?.value || "").trim();
     if (!otherName) return alert("Введите имя второй стороны (клиента/терапевта).");
 
-    const otherId = uid("u");
-    state.users.push({ id: otherId, name: otherName });
+    const key = otherName.toLowerCase();
+    let otherId = state.users.find((u) => (u.name || "").trim().toLowerCase() === key)?.id;
+    if (!otherId) {
+      otherId = uid("u");
+      state.users.push({ id: otherId, name: otherName });
+    }
 
     const isTherapist = role === "therapist";
     const g = {
@@ -1984,6 +2160,64 @@ function renderWizard(state, presetGroupId) {
   return root;
 }
 
+function renderPeople(state) {
+  const list = state.users.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "", "ru"));
+
+  const rows = list.map((u) => {
+    const nameInputId = `ppl_${u.id}`;
+    if (u.id === state.meId) {
+      return h("div", { class: "card" }, [
+        h("div", { class: "line" }, [
+          h("div", { class: "k" }, "Вы"),
+          h("div", {}, u.name || "Без имени"),
+        ]),
+        h("div", { class: "small" }, "Имя и данные профиля — в разделе «Профиль»."),
+      ]);
+    }
+    const onSave = async () => {
+      const nm = (document.getElementById(nameInputId)?.value || "").trim();
+      if (!nm) return alert("Имя не может быть пустым.");
+      const idx = state.users.findIndex((x) => x.id === u.id);
+      if (idx >= 0) {
+        state.users[idx] = { ...state.users[idx], name: nm };
+        await saveState(state);
+        renderApp();
+      }
+    };
+    const onDel = async () => {
+      if (!confirm(`Удалить контакт «${u.name}»? Он будет убран из всех групп и из списков ведущих встреч.`)) return;
+      const wouldBreak = state.sessions.some((s) => {
+        if (!s.leaders.some((l) => l.userId === u.id)) return false;
+        const remaining = s.leaders.filter((l) => l.userId !== u.id);
+        return remaining.length === 0;
+      });
+      if (wouldBreak) {
+        return alert("Нельзя удалить: для какой-то встречи этот человек единственный ведущий. Сначала назначьте другого ведущего.");
+      }
+      state.users = state.users.filter((x) => x.id !== u.id);
+      state.groupMembers = state.groupMembers.filter((m) => m.userId !== u.id);
+      for (const s of state.sessions) {
+        s.leaders = s.leaders.filter((l) => l.userId !== u.id);
+      }
+      await saveState(state);
+      renderApp();
+    };
+    return h("div", { class: "card" }, [
+      h("div", { class: "field" }, [h("input", { id: nameInputId, value: u.name || "" })]),
+      h("div", { class: "actions profile-actions" }, [
+        h("button", { class: "btn primary", onclick: onSave }, "Сохранить"),
+        h("button", { class: "btn danger", onclick: onDel }, "Удалить"),
+      ]),
+    ]);
+  });
+
+  return h("div", {}, [
+    topbar("Контакты", "Справочник людей: правка имени и удаление. Одинаковые имена при добавлении больше не плодятся.", null),
+    h("div", { class: "content" }, rows),
+    nav("people"),
+  ]);
+}
+
 function renderNotFound(msg) {
   return h("div", {}, [
     topbar("Ошибка", msg, null),
@@ -2040,6 +2274,7 @@ function renderApp() {
   else if (path === "/groups") app.appendChild(renderGroups(state, params.get("tab") || "lead"));
   else if (path === "/group") app.appendChild(renderGroup(state, params.get("id")));
   else if (path === "/create") app.appendChild(renderCreate(state));
+  else if (path === "/people") app.appendChild(renderPeople(state));
   else if (path === "/profile") app.appendChild(renderProfile(state));
   else if (path === "/wizard") app.appendChild(renderWizard(state, params.get("groupId")));
   else if (path === "/session") app.appendChild(renderSession(state, params.get("id")));
