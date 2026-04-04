@@ -339,6 +339,162 @@ function openBotInTelegram() {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+function canSendPdfToTelegram() {
+  return Boolean(currentUserId && String(currentUserId).startsWith("tg:"));
+}
+
+function depsPdfRasterReady() {
+  return typeof window.html2canvas === "function" && window.jspdf && window.jspdf.jsPDF;
+}
+
+/**
+ * Растр блока .pdfYearSheet / .pdfClientSheet в PDF (кириллица сохраняется).
+ * Несколько страниц, если контент выше листа.
+ */
+async function captureSheetToPdfBlob(sheetEl, landscape) {
+  if (!depsPdfRasterReady() || !sheetEl) return null;
+  const scale = isTelegramWebApp() ? 1.35 : 2;
+  window.scrollTo(0, 0);
+  const canvas = await window.html2canvas(sheetEl, {
+    scale,
+    useCORS: true,
+    backgroundColor: "#ffffff",
+    logging: false,
+    scrollY: -window.scrollY,
+    windowWidth: sheetEl.scrollWidth,
+    windowHeight: sheetEl.scrollHeight,
+  });
+  const srcW = canvas.width;
+  const srcH = canvas.height;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: landscape ? "landscape" : "portrait", unit: "mm", format: "a4" });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 5;
+  const maxW = pageW - 2 * margin;
+  const maxH = pageH - 2 * margin;
+
+  const naturalHmm = (maxW * srcH) / srcW;
+  if (naturalHmm <= maxH) {
+    const wMm = maxW;
+    const hMm = naturalHmm;
+    const x = margin + (maxW - wMm) / 2;
+    const y = margin + (maxH - hMm) / 2;
+    doc.addImage(canvas.toDataURL("image/jpeg", 0.88), "JPEG", x, y, wMm, hMm);
+  } else {
+    const sliceH = Math.max(1, Math.ceil((maxH * srcW) / maxW));
+    let y0 = 0;
+    let first = true;
+    while (y0 < srcH) {
+      if (!first) doc.addPage();
+      first = false;
+      const sh = Math.min(sliceH, srcH - y0);
+      const c2 = document.createElement("canvas");
+      c2.width = srcW;
+      c2.height = sh;
+      c2.getContext("2d").drawImage(canvas, 0, y0, srcW, sh, 0, 0, srcW, sh);
+      const part = c2.toDataURL("image/jpeg", 0.88);
+      const hMm = (maxW * sh) / srcW;
+      doc.addImage(part, "JPEG", margin, margin, maxW, hMm);
+      y0 += sh;
+    }
+  }
+  return doc.output("blob");
+}
+
+function blobToBase64ForUpload(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const u = String(fr.result || "");
+      const i = u.indexOf(",");
+      resolve(i === -1 ? u : u.slice(i + 1));
+    };
+    fr.onerror = () => reject(new Error("read failed"));
+    fr.readAsDataURL(blob);
+  });
+}
+
+async function sendPdfToTelegramApi(blob, filename, caption) {
+  const data = await blobToBase64ForUpload(blob);
+  const r = await fetch(`${API_BASE}/api/telegram/send-document`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      filename,
+      caption: String(caption || "").slice(0, 900),
+      data,
+    }),
+  });
+  const txt = await r.text();
+  let j;
+  try {
+    j = JSON.parse(txt);
+  } catch {
+    j = { error: txt };
+  }
+  if (!r.ok) {
+    const msg = j.message || j.error || txt;
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(j));
+  }
+}
+
+function pdfTelegramSendButton({ sheetSelector, landscape, filename, caption, btnId }) {
+  if (!canSendPdfToTelegram()) return null;
+  const label = "В чат с ботом (PDF)";
+  return h(
+    "button",
+    {
+      class: "btn primary",
+      id: btnId,
+      onclick: async () => {
+        const el = document.querySelector(sheetSelector);
+        if (!el) return alert("Не найден блок для PDF.");
+        if (!depsPdfRasterReady()) {
+          return alert("Не загрузились библиотеки для PDF. Проверьте сеть и обновите страницу.");
+        }
+        const btn = document.getElementById(btnId);
+        const prev = btn ? btn.textContent : label;
+        try {
+          if (btn) {
+            btn.disabled = true;
+            btn.textContent = "Формирую PDF…";
+          }
+          await new Promise((r) => setTimeout(r, 80));
+          const blob = await captureSheetToPdfBlob(el, landscape);
+          if (!blob || blob.size < 32) throw new Error("Не удалось сформировать PDF");
+          if (btn) btn.textContent = "Отправляю…";
+          await sendPdfToTelegramApi(blob, filename, caption);
+          alert("PDF отправлен в чат с ботом.");
+        } catch (e) {
+          const m = String(e.message || e);
+          if (m.includes("local_server") || m.includes("501")) {
+            alert(
+              "На локальном сервере (npm start) бот недоступен. Отправка работает на сайте с Vercel, открытом через Telegram."
+            );
+          } else if (m.includes("Unauthorized") || m.includes("401")) {
+            alert("Сессия недействительна. Закройте WebApp и откройте снова из Telegram.");
+          } else if (m.toLowerCase().includes("only_telegram")) {
+            alert("Отправка в Telegram доступна только при входе через бота.");
+          } else if (m.includes("chat not found") || m.includes("bot was blocked")) {
+            alert("Не удалось доставить: напишите боту /start в личке и попробуйте снова.");
+          } else {
+            alert(m || "Не удалось отправить файл.");
+          }
+          console.error(e);
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = prev;
+          }
+        }
+      },
+    },
+    label
+  );
+}
+
 async function tryTelegramLogin() {
   if (!isTelegramWebApp()) return { ok: false, skipped: true };
   try {
@@ -1038,7 +1194,14 @@ function renderPdfYear(state, year, mode = "lead") {
 
   return h("div", { class: "pdfYearWrap" }, [
     h("div", { class: "no-print pdfToolbar" }, [
-      h("button", { class: "btn primary", onclick: () => window.print() }, "Печать или сохранить PDF"),
+      pdfTelegramSendButton({
+        sheetSelector: ".pdfYearSheet",
+        landscape: true,
+        filename: `raspisanie_${year}.pdf`,
+        caption: `Расписание ${year} · ${modeLabel}`,
+        btnId: "pdf_tg_year",
+      }),
+      h("button", { class: "btn", onclick: () => window.print() }, isTelegramWebApp() ? "Печать (часто только на ПК)" : "Печать или сохранить PDF"),
       h(
         "button",
         { class: "btn", onclick: () => (location.hash = `#/year?y=${year}&mode=${encodeURIComponent(mode)}`) },
@@ -1047,9 +1210,11 @@ function renderPdfYear(state, year, mode = "lead") {
       h(
         "div",
         { class: "hint pdfToolbarHint" },
-        "В окне печати выберите «Сохранить как PDF». Рекомендуется альбомная ориентация и при обрезании — «Вписать на страницу»."
+        canSendPdfToTelegram()
+          ? "В Telegram на телефоне «Печать» часто не открывается — используйте «В чат с ботом»: PDF сформируется и придёт в личку с ботом (нужен /start у бота)."
+          : "В окне печати выберите «Сохранить как PDF». Рекомендуется альбомная ориентация и при обрезании — «Вписать на страницу»."
       ),
-    ]),
+    ].filter(Boolean)),
     h("div", { class: "pdfYearSheet" }, [
       h("header", { class: "pdfYearHead" }, [
         h("h1", { class: "pdfYearH1" }, `Расписание — ${year}`),
@@ -1111,14 +1276,23 @@ function renderPdfClient(state, userId) {
 
   return h("div", { class: "pdfClientWrap" }, [
     h("div", { class: "no-print pdfToolbar" }, [
-      h("button", { class: "btn primary", onclick: () => window.print() }, "Печать или сохранить PDF"),
+      pdfTelegramSendButton({
+        sheetSelector: ".pdfClientSheet",
+        landscape: false,
+        filename: `klient_${String(userId).replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`,
+        caption: `Клиент: ${u.name || "—"}`,
+        btnId: "pdf_tg_client",
+      }),
+      h("button", { class: "btn", onclick: () => window.print() }, isTelegramWebApp() ? "Печать (часто только на ПК)" : "Печать или сохранить PDF"),
       h("button", { class: "btn", onclick: () => (location.hash = `#/client?id=${encodeURIComponent(userId)}`) }, "Назад к карточке"),
       h(
         "div",
         { class: "hint pdfToolbarHint" },
-        "В PDF попадут анамнез и все поля встреч (включая приватные заметки). Сохраняйте файл с осторожностью."
+        canSendPdfToTelegram()
+          ? "Анамнез и встречи (включая приватные заметки). На телефоне в WebApp удобнее «В чат с ботом»."
+          : "В PDF попадут анамнез и все поля встреч (включая приватные заметки). Сохраняйте файл с осторожностью."
       ),
-    ]),
+    ].filter(Boolean)),
     h("div", { class: "pdfClientSheet" }, [
       h("header", { class: "pdfClientDocHead" }, [
         h("h1", { class: "pdfClientH1" }, `Клиент: ${u.name || "—"}`),

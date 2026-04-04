@@ -258,6 +258,14 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, readState());
     }
 
+    if (url.pathname === "/api/telegram/send-document" && req.method === "POST") {
+      return sendJson(res, 501, {
+        error: "local_server",
+        message:
+          "Отправка файла в Telegram настроена на хостинге (Vercel). Локально `npm start` отдаёт только JSON из data/state.json без бота.",
+      });
+    }
+
     return serveStatic(req, res);
   } catch (e) {
     console.error(e);
