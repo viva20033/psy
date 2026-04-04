@@ -441,6 +441,11 @@ input::placeholder,textarea::placeholder{ color:rgba(233,238,252,.45); }
   padding:14px 16px 18px;
   box-shadow:0 8px 32px rgba(0,0,0,.25);
 }
+#app.isPdfExport .pdfYearSheet,
+#app.isPdfExport .pdfClientSheet{
+  padding:8px 10px 10px;
+  box-shadow:none;
+}
 .pdfYearHead{
   text-align:center;
   margin-bottom:10px;
@@ -466,9 +471,23 @@ input::placeholder,textarea::placeholder{ color:rgba(233,238,252,.45); }
 .pdfYearGrid{
   display:grid;
   grid-template-columns:repeat(4,1fr);
-  grid-template-rows:repeat(3,minmax(0,1fr));
+  grid-template-rows:repeat(3,minmax(0,auto));
   gap:8px 10px;
-  min-height:420px;
+  /* min-height убран: иначе html2canvas захватывал пустоту и PDF резался на много страниц */
+  min-height:0;
+}
+#app.isPdfExport .pdfYearGrid{
+  gap:5px 7px;
+}
+#app.isPdfExport .pdfClientSessions{
+  gap:8px;
+}
+#app.isPdfExport .pdfClientSession{
+  padding:8px 10px;
+}
+#app.isPdfExport .pdfClientAnam{
+  padding:8px 10px;
+  font-size:11px;
 }
 .pdfMonthCell{
   border:1px solid #aeb6ca;

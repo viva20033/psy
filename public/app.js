@@ -349,51 +349,69 @@ function depsPdfRasterReady() {
 
 /**
  * Растр блока .pdfYearSheet / .pdfClientSheet в PDF (кириллица сохраняется).
- * Несколько страниц, если контент выше листа.
+ * @param {{ singlePage?: boolean }} opts — для года: singlePage=true (вписать весь лист в одну страницу, как при печати).
  */
-async function captureSheetToPdfBlob(sheetEl, landscape) {
+async function captureSheetToPdfBlob(sheetEl, landscape, opts = {}) {
+  const singlePage = Boolean(opts.singlePage);
   if (!depsPdfRasterReady() || !sheetEl) return null;
-  const scale = isTelegramWebApp() ? 1.35 : 2;
+  const scale = singlePage ? (isTelegramWebApp() ? 2.25 : 2.5) : isTelegramWebApp() ? 2 : 2.25;
   window.scrollTo(0, 0);
+  await new Promise((r) => requestAnimationFrame(r));
   const canvas = await window.html2canvas(sheetEl, {
     scale,
     useCORS: true,
     backgroundColor: "#ffffff",
     logging: false,
-    scrollY: -window.scrollY,
-    windowWidth: sheetEl.scrollWidth,
-    windowHeight: sheetEl.scrollHeight,
+    imageTimeout: 20000,
+    removeContainer: true,
   });
   const srcW = canvas.width;
   const srcH = canvas.height;
+  if (srcW < 2 || srcH < 2) return null;
+
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: landscape ? "landscape" : "portrait", unit: "mm", format: "a4" });
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
-  const margin = 5;
+  const margin = singlePage ? 4 : 6;
   const maxW = pageW - 2 * margin;
   const maxH = pageH - 2 * margin;
 
-  const naturalHmm = (maxW * srcH) / srcW;
-  if (naturalHmm <= maxH) {
-    const wMm = maxW;
-    const hMm = naturalHmm;
+  const imgData = canvas.toDataURL("image/jpeg", 0.9);
+
+  const fitContainOnePage = () => {
+    let wMm = maxW;
+    let hMm = (maxW * srcH) / srcW;
+    if (hMm > maxH) {
+      hMm = maxH;
+      wMm = (maxH * srcW) / srcH;
+    }
     const x = margin + (maxW - wMm) / 2;
     const y = margin + (maxH - hMm) / 2;
-    doc.addImage(canvas.toDataURL("image/jpeg", 0.88), "JPEG", x, y, wMm, hMm);
+    doc.addImage(imgData, "JPEG", x, y, wMm, hMm);
+  };
+
+  if (singlePage) {
+    fitContainOnePage();
+    return doc.output("blob");
+  }
+
+  const naturalHmm = (maxW * srcH) / srcW;
+  if (naturalHmm <= maxH + 0.5) {
+    fitContainOnePage();
   } else {
-    const sliceH = Math.max(1, Math.ceil((maxH * srcW) / maxW));
+    const sliceH = Math.max(1, Math.floor((maxH * srcW) / maxW));
     let y0 = 0;
     let first = true;
     while (y0 < srcH) {
-      if (!first) doc.addPage();
+      if (!first) doc.addPage("a4", landscape ? "l" : "p");
       first = false;
       const sh = Math.min(sliceH, srcH - y0);
       const c2 = document.createElement("canvas");
       c2.width = srcW;
       c2.height = sh;
       c2.getContext("2d").drawImage(canvas, 0, y0, srcW, sh, 0, 0, srcW, sh);
-      const part = c2.toDataURL("image/jpeg", 0.88);
+      const part = c2.toDataURL("image/jpeg", 0.9);
       const hMm = (maxW * sh) / srcW;
       doc.addImage(part, "JPEG", margin, margin, maxW, hMm);
       y0 += sh;
@@ -440,7 +458,7 @@ async function sendPdfToTelegramApi(blob, filename, caption) {
   }
 }
 
-function pdfTelegramSendButton({ sheetSelector, landscape, filename, caption, btnId }) {
+function pdfTelegramSendButton({ sheetSelector, landscape, filename, caption, btnId, singlePage }) {
   if (!canSendPdfToTelegram()) return null;
   const label = "В чат с ботом (PDF)";
   return h(
@@ -462,7 +480,7 @@ function pdfTelegramSendButton({ sheetSelector, landscape, filename, caption, bt
             btn.textContent = "Формирую PDF…";
           }
           await new Promise((r) => setTimeout(r, 80));
-          const blob = await captureSheetToPdfBlob(el, landscape);
+          const blob = await captureSheetToPdfBlob(el, landscape, { singlePage: !!singlePage });
           if (!blob || blob.size < 32) throw new Error("Не удалось сформировать PDF");
           if (btn) btn.textContent = "Отправляю…";
           await sendPdfToTelegramApi(blob, filename, caption);
@@ -1200,6 +1218,7 @@ function renderPdfYear(state, year, mode = "lead") {
         filename: `raspisanie_${year}.pdf`,
         caption: `Расписание ${year} · ${modeLabel}`,
         btnId: "pdf_tg_year",
+        singlePage: true,
       }),
       h("button", { class: "btn", onclick: () => window.print() }, isTelegramWebApp() ? "Печать (часто только на ПК)" : "Печать или сохранить PDF"),
       h(
