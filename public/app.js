@@ -23,7 +23,7 @@ function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
 
-/** Поля сессии для заметок терапевта (этап 1 MVP). */
+/** Поля сессии для карточки встречи (этап 1): тема, резюме, приватные заметки ведущего. */
 function emptySessionFields() {
   return { theme: "", summary: "", privateNotes: "" };
 }
@@ -39,6 +39,19 @@ function formatDateRu(iso) {
   const dt = new Date(Date.UTC(y, m - 1, d));
   const wd = new Intl.DateTimeFormat("ru-RU", { weekday: "short" }).format(dt);
   return `${wd} ${pad2(d)}.${pad2(m)}`;
+}
+
+/** ДД.ММ для компактной строки в PDF. */
+function formatDateDot(iso) {
+  if (!iso || !tryParseISODate(iso)) return "—";
+  const [y, m, d] = iso.split("-").map(Number);
+  return `${pad2(d)}.${pad2(m)}`;
+}
+
+function truncateText(s, max) {
+  const t = String(s || "").trim();
+  if (!t) return "";
+  return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
 function formatTimeRange(start, end) {
@@ -495,6 +508,19 @@ function sessionFirstDate(session) {
   return dates[0] || "9999-99-99";
 }
 
+function sortSessionsChronological(sessions) {
+  return sessions.slice().sort((a, b) => {
+    const da = sessionFirstDate(a);
+    const db = sessionFirstDate(b);
+    const aBad = da === "9999-99-99";
+    const bBad = db === "9999-99-99";
+    if (aBad && bBad) return 0;
+    if (aBad) return 1;
+    if (bBad) return -1;
+    return da.localeCompare(db);
+  });
+}
+
 function todayISOLocal() {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -547,6 +573,22 @@ function sessionDynamicsSnippet(s) {
   if (!pick) return "—";
   const one = pick.split("\n")[0];
   return one.length > 120 ? `${one.slice(0, 117)}…` : one;
+}
+
+/** Ссылка на «Ближайшее» с сохранением фильтров. mode: lead | part; statusKey: all | prelim | ok */
+function hashUpcoming(mode, groupId, statusKey) {
+  const p = new URLSearchParams();
+  p.set("mode", mode === "part" ? "part" : "lead");
+  if (groupId) p.set("group", groupId);
+  if (statusKey && statusKey !== "all") p.set("st", statusKey);
+  return `#/upcoming?${p.toString()}`;
+}
+
+function groupsVisibleInMode(state, mode) {
+  return state.groups
+    .filter((g) => (mode === "lead" ? isLeaderInGroup(state, g.id, state.meId) : isParticipantInGroup(state, g.id, state.meId)))
+    .slice()
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ru"));
 }
 
 function sessionDayLabel(session, idx) {
@@ -672,39 +714,144 @@ function topbar(title, subtitle, pills) {
   ]);
 }
 
-function renderUpcoming(state, mode = "lead") {
+function renderUpcoming(state, mode = "lead", urlParams = null) {
+  const params = urlParams instanceof URLSearchParams ? urlParams : new URLSearchParams();
   const me = getMe(state);
-  const subtitle = `${me?.name ?? "Пользователь"} • только предстоящие; прошедшие — в «Вид на год»`;
+  const subtitle = `${me?.name ?? "Пользователь"} • здесь только предстоящие; прошедшие — в «Вид на год»`;
+
+  const groupsInMode = groupsVisibleInMode(state, mode);
+  const groupFilterRaw = params.get("group") || "";
+  const groupFilter = groupsInMode.some((g) => g.id === groupFilterRaw) ? groupFilterRaw : "";
+  const stRaw = params.get("st") || "all";
+  const statusFilter = stRaw === "prelim" || stRaw === "ok" ? stRaw : "all";
 
   const pills = [
     {
       label: "Я веду",
       pressed: mode === "lead",
-      onClick: () => (location.hash = "#/upcoming?mode=lead"),
+      onClick: () => (location.hash = hashUpcoming("lead", groupFilter, statusFilter)),
     },
     {
       label: "Я участник",
       pressed: mode === "part",
-      onClick: () => (location.hash = "#/upcoming?mode=part"),
+      onClick: () => (location.hash = hashUpcoming("part", groupFilter, statusFilter)),
     },
   ];
 
-  const sessions = state.sessions
+  const baseSessions = state.sessions
     .filter((s) => sessionVisibleForMe(state, s, mode))
-    .filter((s) => !sessionIsFullyPast(s))
-    .slice()
-    .sort((a, b) => sessionFirstDate(a).localeCompare(sessionFirstDate(b)));
+    .filter((s) => !sessionIsFullyPast(s));
 
-  const list =
-    sessions.length === 0
-      ? h("div", { class: "empty" }, "Нет предстоящих встреч. Завершённые и архив смотрите в «Вид на год».")
-      : h(
-          "div",
-          {},
-          sessions.map((s) => sessionCard(state, s, { showEdit: isLeaderInGroup(state, s.groupId, state.meId) }))
-        );
+  let sessions = baseSessions.slice();
+  if (groupFilter) sessions = sessions.filter((s) => s.groupId === groupFilter);
+  if (statusFilter === "prelim") sessions = sessions.filter((s) => s.status === "предварительно");
+  if (statusFilter === "ok") sessions = sessions.filter((s) => s.status === "подтверждено");
+  sessions.sort((a, b) => sessionFirstDate(a).localeCompare(sessionFirstDate(b)));
 
+  const hasFilters = Boolean(groupFilter || statusFilter !== "all");
   const yNow = new Date().getFullYear();
+
+  const onFilterApply = () => {
+    const g = document.getElementById("upcoming_f_group")?.value || "";
+    const st = document.getElementById("upcoming_f_st")?.value || "all";
+    location.hash = hashUpcoming(mode, g, st);
+  };
+
+  const filterCard =
+    groupsInMode.length > 0
+      ? h("div", { class: "card filterCard" }, [
+          h("div", { class: "sectionTitle" }, "Фильтры"),
+          h("div", { class: "hint", style: "margin-bottom:10px;" }, "Можно сузить список по группе и по статусу (черновик или подтверждено)."),
+          h("div", { class: "grid2" }, [
+            h("div", { class: "field" }, [
+              h("label", { class: "label", for: "upcoming_f_group" }, "Группа"),
+              h(
+                "select",
+                { id: "upcoming_f_group" },
+                [
+                  h("option", { value: "", ...(!groupFilter ? { selected: true } : {}) }, "Все группы"),
+                  ...groupsInMode.map((g) =>
+                    h("option", { value: g.id, ...(g.id === groupFilter ? { selected: true } : {}) }, g.name || "Без названия")
+                  ),
+                ]
+              ),
+            ]),
+            h("div", { class: "field" }, [
+              h("label", { class: "label", for: "upcoming_f_st" }, "Статус"),
+              h(
+                "select",
+                { id: "upcoming_f_st" },
+                [
+                  h("option", { value: "all", ...(statusFilter === "all" ? { selected: true } : {}) }, "Все"),
+                  h("option", { value: "prelim", ...(statusFilter === "prelim" ? { selected: true } : {}) }, "Предварительно"),
+                  h("option", { value: "ok", ...(statusFilter === "ok" ? { selected: true } : {}) }, "Подтверждено"),
+                ]
+              ),
+            ]),
+          ]),
+          h("div", { class: "actions", style: "margin-top:4px;" }, [
+            h("button", { class: "btn primary", onclick: onFilterApply }, "Применить"),
+            hasFilters
+              ? h("button", { class: "btn", onclick: () => (location.hash = hashUpcoming(mode, "", "all")) }, "Сбросить")
+              : null,
+          ]),
+        ])
+      : null;
+
+  let list = null;
+  if (sessions.length > 0) {
+    list = h(
+      "div",
+      {},
+      sessions.map((s) => sessionCard(state, s, { showEdit: isLeaderInGroup(state, s.groupId, state.meId) }))
+    );
+  } else if (groupsInMode.length === 0 && mode === "lead") {
+    list = h("div", { class: "empty" }, [
+      h("div", {}, "Пока нет групп, где вы ведущий. Создайте группу — затем можно планировать встречи."),
+      h("div", { class: "actions", style: "margin-top:14px;" }, [
+        h("button", { class: "btn primary", onclick: () => (location.hash = "#/new-group") }, "Создать группу"),
+      ]),
+    ]);
+  } else if (groupsInMode.length === 0 && mode === "part") {
+    list = h(
+      "div",
+      { class: "empty" },
+      "Вас пока не добавили ни в одну группу. Когда ведущий добавит вас, список появится в разделе «Группы»."
+    );
+  } else if (hasFilters && baseSessions.length > 0) {
+    list = h("div", { class: "empty" }, [
+      h("div", {}, "Нет встреч с выбранными фильтрами."),
+      h("div", { class: "actions", style: "margin-top:14px;" }, [
+        h("button", { class: "btn primary", onclick: () => (location.hash = hashUpcoming(mode, "", "all")) }, "Сбросить фильтры"),
+      ]),
+    ]);
+  } else {
+    const actions =
+      mode === "lead"
+        ? [
+            h("button", { class: "btn primary", onclick: () => (location.hash = "#/wizard") }, "Запланировать встречу"),
+            h("button", { class: "btn", onclick: () => (location.hash = "#/new-consultation") }, "Личная консультация"),
+            h("button", { class: "btn", onclick: () => (location.hash = `#/year?y=${yNow}&mode=${encodeURIComponent(mode)}`) }, "Вид на год"),
+          ]
+        : [
+            h(
+              "button",
+              { class: "btn primary", onclick: () => (location.hash = `#/year?y=${yNow}&mode=${encodeURIComponent(mode)}`) },
+              "Вид на год"
+            ),
+          ];
+    list = h("div", { class: "empty" }, [
+      h(
+        "div",
+        {},
+        mode === "lead"
+          ? "Нет предстоящих встреч. Запланируйте новую или откройте календарь за год, если нужны прошедшие."
+          : "Нет предстоящих встреч, где вы участник. Прошедшие и будущие по всем датам — в «Вид на год»."
+      ),
+      h("div", { class: "actions", style: "margin-top:14px;" }, actions),
+    ]);
+  }
+
   return h("div", {}, [
     topbar("Ближайшее", subtitle, pills),
     h("div", { class: "content" }, [
@@ -718,6 +865,7 @@ function renderUpcoming(state, mode = "lead") {
           "Вид на год"
         ),
       ]),
+      filterCard,
       h("div", { class: "sectionTitle" }, "Список встреч"),
       list,
     ]),
@@ -840,10 +988,153 @@ function renderYear(state, year, mode = "lead") {
       strip,
       ...monthsBlocks,
       h("div", { class: "actions" }, [
+        h(
+          "button",
+          {
+            class: "btn primary",
+            onclick: () => (location.hash = `#/pdf-year?y=${year}&mode=${encodeURIComponent(mode)}`),
+          },
+          "PDF / печать года"
+        ),
         h("button", { class: "btn", onclick: () => (location.hash = `#/upcoming?mode=${mode}`) }, "К списку «Ближайшее»"),
       ]),
     ]),
     nav("year"),
+  ]);
+}
+
+function renderPdfYear(state, year, mode = "lead") {
+  const me = getMe(state);
+  const modeLabel = mode === "part" ? "участник" : "ведущий";
+  const sessions = state.sessions.filter((s) => sessionVisibleForMe(state, s, mode));
+  const genStr = new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short" }).format(new Date());
+
+  const monthCells = RU_MONTHS.map((name, i) => {
+    const m = i + 1;
+    const inMonth = sessions
+      .filter((s) => blocksInCalendarMonth(s, year, m).length > 0)
+      .slice()
+      .sort((a, b) => (sessionFirstDateInMonth(a, year, m) || "").localeCompare(sessionFirstDateInMonth(b, year, m) || ""));
+
+    const items = [];
+    for (const s of inMonth) {
+      const g = groupById(state, s.groupId);
+      const blocks = blocksInCalendarMonth(s, year, m).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      const stMark = s.status === "подтверждено" ? "✓" : "?";
+      const gShort = truncateText(g?.name, 20);
+      for (const b of blocks) {
+        const t = `${formatDateDot(b.date)} ${gShort} ${formatTimeRange(b.startTime, b.endTime)} ${stMark}`.trim();
+        items.push(t);
+      }
+    }
+
+    return h("div", { class: "pdfMonthCell" }, [
+      h("div", { class: "pdfMonthTitle" }, name),
+      items.length === 0
+        ? h("div", { class: "pdfMonthEmpty" }, "нет встреч")
+        : h("ul", { class: "pdfMonthList" }, items.map((t) => h("li", {}, t))),
+    ]);
+  });
+
+  return h("div", { class: "pdfYearWrap" }, [
+    h("div", { class: "no-print pdfToolbar" }, [
+      h("button", { class: "btn primary", onclick: () => window.print() }, "Печать или сохранить PDF"),
+      h(
+        "button",
+        { class: "btn", onclick: () => (location.hash = `#/year?y=${year}&mode=${encodeURIComponent(mode)}`) },
+        "Назад к году"
+      ),
+      h(
+        "div",
+        { class: "hint pdfToolbarHint" },
+        "В окне печати выберите «Сохранить как PDF». Рекомендуется альбомная ориентация и при обрезании — «Вписать на страницу»."
+      ),
+    ]),
+    h("div", { class: "pdfYearSheet" }, [
+      h("header", { class: "pdfYearHead" }, [
+        h("h1", { class: "pdfYearH1" }, `Расписание — ${year}`),
+        h("div", { class: "pdfYearSub" }, `${me?.name ?? "Пользователь"} · режим: ${modeLabel} · ${genStr}`),
+        h("div", { class: "pdfYearLegend" }, "✓ подтверждено · ? предварительно · время «уточним», если слот не задан"),
+      ]),
+      h("div", { class: "pdfYearGrid" }, monthCells),
+    ]),
+  ]);
+}
+
+function pdfClientSessionBlock(state, s) {
+  const g = groupById(state, s.groupId);
+  const weekly = formatWeeklySlotLine(s);
+  const parts = [
+    h("div", { class: "pdfClientSessionHead" }, [
+      h("div", { class: "pdfClientSessionTitle" }, g?.name ?? "Личная консультация"),
+      h("div", { class: "pdfClientSessionMeta" }, `Статус: ${s.status}`),
+    ]),
+    (s.blocks || []).length === 0
+      ? h("div", { class: "pdfClientBlocks pdfClientBlocksEmpty" }, "Дни встречи не заданы.")
+      : h(
+          "div",
+          { class: "pdfClientBlocks" },
+          s.blocks.map((b) =>
+            h("div", { class: "pdfClientBlockLine" }, `${formatDateRu(b.date)} — ${formatTimeRange(b.startTime, b.endTime)}`)
+          )
+        ),
+  ];
+  if (weekly) parts.push(h("div", { class: "pdfClientField" }, [h("span", { class: "pdfClientK" }, "Постоянный слот: "), weekly]));
+  const addPara = (label, text) => {
+    const t = String(text || "").trim();
+    if (!t) return null;
+    return h("div", { class: "pdfClientField" }, [
+      h("div", { class: "pdfClientK" }, label),
+      h("div", { class: "pdfClientV" }, t),
+    ]);
+  };
+  const p1 = addPara("Тема", s.theme);
+  const p2 = addPara("Резюме", s.summary);
+  const p3 = addPara("Общая заметка", s.note);
+  const p4 = addPara("Приватные заметки", s.privateNotes);
+  if (p1) parts.push(p1);
+  if (p2) parts.push(p2);
+  if (p3) parts.push(p3);
+  if (p4) parts.push(p4);
+  return h("div", { class: "pdfClientSession" }, parts.filter(Boolean));
+}
+
+function renderPdfClient(state, userId) {
+  if (!userId) return renderNotFound("Клиент не указан");
+  if (!myClientUserIds(state).includes(userId)) return renderNotFound("Нет доступа или клиент не найден");
+  const u = userById(state, userId);
+  if (!u) return renderNotFound("Клиент не найден");
+
+  const sessions = sortSessionsChronological(sessionsForClientConsultation(state, userId));
+  const genStr = new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short" }).format(new Date());
+  const anam = String(u.clientAnamnesis || "").trim();
+
+  return h("div", { class: "pdfClientWrap" }, [
+    h("div", { class: "no-print pdfToolbar" }, [
+      h("button", { class: "btn primary", onclick: () => window.print() }, "Печать или сохранить PDF"),
+      h("button", { class: "btn", onclick: () => (location.hash = `#/client?id=${encodeURIComponent(userId)}`) }, "Назад к карточке"),
+      h(
+        "div",
+        { class: "hint pdfToolbarHint" },
+        "В PDF попадут анамнез и все поля встреч (включая приватные заметки). Сохраняйте файл с осторожностью."
+      ),
+    ]),
+    h("div", { class: "pdfClientSheet" }, [
+      h("header", { class: "pdfClientDocHead" }, [
+        h("h1", { class: "pdfClientH1" }, `Клиент: ${u.name || "—"}`),
+        h("div", { class: "pdfClientSub" }, `Выгрузка для ведущего · ${genStr}`),
+      ]),
+      h("section", { class: "pdfClientSection" }, [
+        h("h2", { class: "pdfClientH2" }, "Анамнез / контекст"),
+        h("div", { class: "pdfClientAnam" }, anam || "—"),
+      ]),
+      h("section", { class: "pdfClientSection" }, [
+        h("h2", { class: "pdfClientH2" }, `Встречи (${sessions.length})`),
+        sessions.length === 0
+          ? h("div", { class: "pdfClientEmpty" }, "Запланированных встреч в консультации с этим человеком пока нет.")
+          : h("div", { class: "pdfClientSessions" }, sessions.map((s) => pdfClientSessionBlock(state, s))),
+      ]),
+    ]),
   ]);
 }
 
@@ -911,7 +1202,20 @@ function renderGroups(state, tab = "lead") {
 
   const list =
     groups.length === 0
-      ? h("div", { class: "empty" }, "Пока нет групп в этом разделе.")
+      ? h("div", {}, [
+          h(
+            "div",
+            { class: "empty" },
+            tab === "lead"
+              ? "Пока нет групп, где вы указаны как ведущий."
+              : "Пока нет групп, где вы указаны как участник."
+          ),
+          tab === "lead"
+            ? h("div", { class: "actions", style: "margin-top:12px;" }, [
+                h("button", { class: "btn primary", onclick: () => (location.hash = "#/new-group") }, "Создать группу"),
+              ])
+            : h("div", { class: "small", style: "margin-top:12px; opacity:.92;" }, "Попросите ведущего добавить вас в группу — тогда она появится здесь."),
+        ])
       : h(
           "div",
           {},
@@ -1154,7 +1458,7 @@ function renderCreate(state) {
       ]),
       h("div", { class: "card" }, [
         h("div", { class: "groupName" }, "Что вы хотите сделать?"),
-        h("div", { class: "small" }, "Данные сохраняются на сервере (SQLite). Сценарий: плавающие даты и время «уточним позже»."),
+        h("div", { class: "small" }, "Данные сохраняются в вашем кабинете. Даты и время можно уточнять позже."),
         h("div", { class: "actions" }, [
           h("button", { class: "btn primary", onclick: () => (location.hash = "#/wizard") }, "Запланировать встречу группы"),
           h("button", { class: "btn", onclick: () => (location.hash = "#/new-consultation") }, "Личная консультация"),
@@ -2319,6 +2623,14 @@ function renderClient(state, userId) {
             })
           ),
       h("div", { class: "actions" }, [
+        h(
+          "button",
+          {
+            class: "btn primary",
+            onclick: () => (location.hash = `#/pdf-client?id=${encodeURIComponent(userId)}`),
+          },
+          "PDF / печать"
+        ),
         h("button", { class: "btn", onclick: () => (location.hash = "#/clients") }, "К списку клиентов"),
       ]),
     ]),
@@ -2408,6 +2720,7 @@ let state = null;
 function renderApp() {
   const { path, params } = parseHash();
   const app = document.getElementById("app");
+  app.classList.toggle("isPdfExport", path === "/pdf-year" || (path === "/pdf-client" && params.get("id")));
   app.innerHTML = "";
 
   if (!state) {
@@ -2431,11 +2744,19 @@ function renderApp() {
     return;
   }
   if (path === "/") location.hash = "#/upcoming";
-  else if (path === "/upcoming") app.appendChild(renderUpcoming(state, params.get("mode") || "lead"));
+  else if (path === "/upcoming") app.appendChild(renderUpcoming(state, params.get("mode") || "lead", params));
   else if (path === "/year") {
     const y = Number.parseInt(params.get("y"), 10);
     const year = Number.isFinite(y) && y >= 2000 && y <= 2100 ? y : new Date().getFullYear();
     app.appendChild(renderYear(state, year, params.get("mode") || "lead"));
+  }
+  else if (path === "/pdf-year") {
+    const y = Number.parseInt(params.get("y"), 10);
+    const year = Number.isFinite(y) && y >= 2000 && y <= 2100 ? y : new Date().getFullYear();
+    app.appendChild(renderPdfYear(state, year, params.get("mode") || "lead"));
+  }
+  else if (path === "/pdf-client") {
+    app.appendChild(renderPdfClient(state, params.get("id")));
   }
   else if (path === "/groups") app.appendChild(renderGroups(state, params.get("tab") || "lead"));
   else if (path === "/group") app.appendChild(renderGroup(state, params.get("id")));
