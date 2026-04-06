@@ -337,6 +337,24 @@ input::placeholder,textarea::placeholder{ color:rgba(233,238,252,.45); }
 
 .filterCard{
   margin-bottom:14px;
+  max-width:100%;
+  min-width:0;
+  overflow-x:hidden;
+  box-sizing:border-box;
+}
+.filterCard .grid2 > .field{
+  min-width:0;
+}
+.filterCard .field select{
+  width:100%;
+  max-width:100%;
+  min-width:0;
+  box-sizing:border-box;
+}
+@media (max-width:520px){
+  .filterCard .grid2{
+    grid-template-columns:1fr;
+  }
 }
 .filterCard + .sectionTitle{
   margin-top:4px;
