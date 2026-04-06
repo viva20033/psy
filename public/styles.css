@@ -451,6 +451,20 @@ input::placeholder,textarea::placeholder{ color:rgba(233,238,252,.45); }
   margin:0 auto;
   padding:12px 14px 24px;
 }
+body.pdf-capture-active{
+  overflow-x:visible !important;
+}
+body.pdf-capture-active #app{
+  max-width:none;
+}
+#app.isPdfExport{
+  overflow-x:visible;
+  max-width:none;
+}
+#app.isPdfExport .pdfYearWrap,
+#app.isPdfExport .pdfClientWrap{
+  max-width:none;
+}
 .pdfYearSheet,
 .pdfClientSheet{
   background:#fff;
@@ -458,6 +472,17 @@ input::placeholder,textarea::placeholder{ color:rgba(233,238,252,.45); }
   border-radius:12px;
   padding:14px 16px 18px;
   box-shadow:0 8px 32px rgba(0,0,0,.25);
+}
+.pdfClientSheet{
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  width:100%;
+  box-sizing:border-box;
+}
+#app.isPdfExport .pdfYearSheet{
+  width:100%;
+  box-sizing:border-box;
 }
 #app.isPdfExport .pdfYearSheet,
 #app.isPdfExport .pdfClientSheet{
@@ -559,6 +584,9 @@ input::placeholder,textarea::placeholder{ color:rgba(233,238,252,.45); }
 }
 .pdfClientSection{
   margin-bottom:18px;
+  width:100%;
+  align-self:stretch;
+  box-sizing:border-box;
 }
 .pdfClientH2{
   margin:0 0 8px;
@@ -567,6 +595,10 @@ input::placeholder,textarea::placeholder{ color:rgba(233,238,252,.45); }
   color:#1a1f2e;
 }
 .pdfClientAnam{
+  display:block;
+  width:100%;
+  max-width:100%;
+  box-sizing:border-box;
   white-space:pre-wrap;
   font-size:12px;
   line-height:1.45;

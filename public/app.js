@@ -347,6 +347,59 @@ function depsPdfRasterReady() {
   return typeof window.html2canvas === "function" && window.jspdf && window.jspdf.jsPDF;
 }
 
+/** Перед снимком задаём ширину ~лист A4, иначе с телефона канвас узкий → в PDF полоска по центру. */
+function applyPdfCaptureViewport(sheetEl, landscape) {
+  const wrap = sheetEl.closest(".pdfYearWrap, .pdfClientWrap");
+  const targetPx = landscape ? 1180 : 840;
+  const els = [sheetEl, wrap].filter(Boolean);
+  const prev = els.map((el) => ({
+    el,
+    width: el.style.width,
+    maxWidth: el.style.maxWidth,
+    minWidth: el.style.minWidth,
+    boxSizing: el.style.boxSizing,
+    marginLeft: el.style.marginLeft,
+    marginRight: el.style.marginRight,
+  }));
+  const body = document.body;
+  const app = document.getElementById("app");
+  const prevBodyOx = body.style.overflowX;
+  const prevAppMin = app ? app.style.minWidth : "";
+  const prevAppOv = app ? app.style.overflow : "";
+
+  body.classList.add("pdf-capture-active");
+  body.style.overflowX = "visible";
+  if (app) {
+    app.style.overflow = "visible";
+    app.style.minWidth = `${targetPx}px`;
+  }
+  for (const el of els) {
+    el.style.boxSizing = "border-box";
+    el.style.width = `${targetPx}px`;
+    el.style.maxWidth = `${targetPx}px`;
+    el.style.minWidth = `${targetPx}px`;
+    el.style.marginLeft = "auto";
+    el.style.marginRight = "auto";
+  }
+
+  return function restorePdfCaptureViewport() {
+    body.classList.remove("pdf-capture-active");
+    body.style.overflowX = prevBodyOx;
+    if (app) {
+      app.style.minWidth = prevAppMin;
+      app.style.overflow = prevAppOv;
+    }
+    for (const p of prev) {
+      p.el.style.width = p.width;
+      p.el.style.maxWidth = p.maxWidth;
+      p.el.style.minWidth = p.minWidth;
+      p.el.style.boxSizing = p.boxSizing;
+      p.el.style.marginLeft = p.marginLeft;
+      p.el.style.marginRight = p.marginRight;
+    }
+  };
+}
+
 /**
  * Растр блока .pdfYearSheet / .pdfClientSheet в PDF (кириллица сохраняется).
  * @param {{ singlePage?: boolean }} opts — для года: singlePage=true (вписать весь лист в одну страницу, как при печати).
@@ -356,15 +409,23 @@ async function captureSheetToPdfBlob(sheetEl, landscape, opts = {}) {
   if (!depsPdfRasterReady() || !sheetEl) return null;
   const scale = singlePage ? (isTelegramWebApp() ? 2.25 : 2.5) : isTelegramWebApp() ? 2 : 2.25;
   window.scrollTo(0, 0);
-  await new Promise((r) => requestAnimationFrame(r));
-  const canvas = await window.html2canvas(sheetEl, {
-    scale,
-    useCORS: true,
-    backgroundColor: "#ffffff",
-    logging: false,
-    imageTimeout: 20000,
-    removeContainer: true,
-  });
+  const restoreViewport = applyPdfCaptureViewport(sheetEl, landscape);
+  let canvas;
+  try {
+    await new Promise((r) => requestAnimationFrame(r));
+    await new Promise((r) => requestAnimationFrame(r));
+    canvas = await window.html2canvas(sheetEl, {
+      scale,
+      useCORS: true,
+      backgroundColor: "#ffffff",
+      logging: false,
+      imageTimeout: 20000,
+      removeContainer: true,
+    });
+  } finally {
+    restoreViewport();
+  }
+  if (!canvas) return null;
   const srcW = canvas.width;
   const srcH = canvas.height;
   if (srcW < 2 || srcH < 2) return null;
