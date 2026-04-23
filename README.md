@@ -32,6 +32,23 @@ create table if not exists app_accounts (
 );
 ```
 
+Дополнительно для приглашений в группы (MVP, токены):
+
+```sql
+create table if not exists app_invites (
+  token text primary key,
+  created_by text not null,
+  group_id text not null,
+  role text not null default 'participant', -- 'participant' | 'leader'
+  created_at timestamptz not null default now(),
+  used_by text,
+  used_at timestamptz
+);
+
+create index if not exists app_invites_created_by_idx on app_invites (created_by);
+create index if not exists app_invites_group_id_idx on app_invites (group_id);
+```
+
 ## 2) Vercel: переменные окружения
 
 В Vercel → Project → Settings → Environment Variables:
