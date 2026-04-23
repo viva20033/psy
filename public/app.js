@@ -1655,13 +1655,17 @@ function renderGroup(state, groupId) {
           try {
             const r = await apiJson("/api/invites/create", { method: "POST", body: { groupId: g.id, role: "participant" } });
             const token = String(r.token || "");
-            const base = location.origin + location.pathname;
-            const link = `${base}#/join?token=${encodeURIComponent(token)}`;
+            const links = inviteLinksForToken(token);
+            const link = links.tg || links.web;
             const el = document.getElementById(inviteOutId);
             if (el) el.value = link;
             setPendingInviteToken(token);
             const ok = await copyText(link);
-            alert(ok ? "Приглашение скопировано. Отправьте ссылку человеку в Telegram." : "Ссылка готова. Скопируйте её из поля ниже.");
+            alert(
+              ok
+                ? "Приглашение скопировано. Отправьте ссылку человеку — она откроется в Telegram."
+                : "Ссылка готова. Скопируйте её из поля ниже."
+            );
           } catch (e) {
             alert(String(e.message || e));
           }
@@ -3061,6 +3065,31 @@ function loadPendingInviteToken() {
   return pendingInviteToken;
 }
 
+function inviteLinksForToken(token) {
+  const t = String(token || "").trim();
+  const base = location.origin + location.pathname;
+  const web = `${base}#/join?token=${encodeURIComponent(t)}`;
+  const bot = getBotUsername();
+  // Telegram deep link: открывает чат с ботом, а внутри кнопка WebApp передаст start_param.
+  // startapp поддерживается Telegram, а start_param будет доступен через initDataUnsafe.start_param.
+  const tg = bot ? `https://t.me/${encodeURIComponent(bot)}?startapp=${encodeURIComponent(`join_${t}`)}` : null;
+  return { web, tg };
+}
+
+function inviteTokenFromTelegramStartParam() {
+  try {
+    if (!isTelegramWebApp()) return null;
+    const sp = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
+    const raw = String(sp || "").trim();
+    if (!raw) return null;
+    // ожидаем join_<token>
+    if (raw.startsWith("join_")) return raw.slice("join_".length).trim() || null;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function copyText(text) {
   const t = String(text || "");
   try {
@@ -3109,40 +3138,60 @@ function renderJoin() {
   const token = String(params.get("token") || pendingInviteToken || "").trim();
   if (token) setPendingInviteToken(token);
 
-  const content = [];
-  content.push(h("div", { class: "card" }, [
-    h("div", { class: "sectionTitle" }, "Приглашение в группу"),
-    h("div", { class: "small" }, "Откройте приложение в Telegram и нажмите «Присоединиться». Если вы ещё не вошли — сначала выполните вход через Telegram."),
-  ]));
+  const inTg = isTelegramWebAppContext();
+  const loggedIn = Boolean(currentUserId);
+  const canAccept = inTg && loggedIn && String(currentUserId).startsWith("tg:");
 
-  content.push(h("div", { class: "card" }, [
-    h("div", { class: "field" }, [
-      h("label", { class: "label" }, "Токен"),
-      h("input", { value: token, readonly: true }),
-    ]),
-    h("div", { class: "actions profile-actions" }, [
-      h("button", { class: "btn", onclick: async () => {
-        const ok = await copyText(token);
-        alert(ok ? "Скопировано." : "Не удалось скопировать.");
-      } }, "Скопировать токен"),
-      h("button", { class: "btn", onclick: () => openBotInTelegram() }, "Открыть бота"),
-    ]),
-    h("div", { class: "hr" }),
-    h("div", { class: "actions profile-actions" }, [
-      h("button", { class: "btn primary", onclick: async () => {
-        try {
-          const r = await apiJson("/api/invites/accept", { method: "POST", body: { token } });
-          setPendingInviteToken(null);
-          // перезагрузим state, чтобы группа появилась сразу
-          state = await loadState();
-          location.hash = `#/group?id=${encodeURIComponent(r.groupId)}`;
-          renderApp();
-        } catch (e) {
-          alert(String(e.message || e));
-        }
-      } }, "Присоединиться"),
-    ]),
-  ]));
+  const content = [];
+  content.push(
+    h("div", { class: "card" }, [
+      h("div", { class: "sectionTitle" }, "Вас пригласили в группу"),
+      h(
+        "div",
+        { class: "small" },
+        inTg
+          ? "Нажмите «Присоединиться». Если вход ещё не выполнен — сначала войдите через Telegram."
+          : "Откройте эту ссылку в Telegram (через бота), и приложение само присоединит вас к группе."
+      ),
+    ])
+  );
+
+  content.push(
+    h("div", { class: "card" }, [
+      h("div", { class: "actions profile-actions" }, [
+        !inTg ? h("button", { class: "btn primary", onclick: () => openBotInTelegram() }, "Открыть в Telegram") : null,
+        inTg && !loggedIn ? h("button", { class: "btn primary", onclick: () => (location.hash = "#/login") }, "Войти") : null,
+        h(
+          "button",
+          {
+            class: "btn primary",
+            disabled: canAccept ? null : true,
+            onclick: async () => {
+              try {
+                const r = await apiJson("/api/invites/accept", { method: "POST", body: { token } });
+                setPendingInviteToken(null);
+                state = await loadState();
+                location.hash = `#/group?id=${encodeURIComponent(r.groupId)}`;
+                renderApp();
+              } catch (e) {
+                const status = Number(e?.status || 0);
+                if (status === 401) return alert("Нужно войти. Откройте приложение внутри Telegram и выполните вход.");
+                alert(String(e.message || e));
+              }
+            },
+          },
+          "Присоединиться"
+        ),
+      ]),
+      !canAccept
+        ? h(
+            "div",
+            { class: "small", style: "margin-top:10px; opacity:.9;" },
+            inTg ? "Кнопка станет активной после входа через Telegram." : "Эта страница должна быть открыта внутри Telegram."
+          )
+        : null,
+    ])
+  );
 
   return h("div", {}, [
     topbar("Присоединиться", "Приглашение в группу по ссылке.", null),
@@ -3219,6 +3268,9 @@ async function boot() {
       window.Telegram.WebApp.ready();
     } catch {}
   }
+  // Если открыто из Telegram с start_param — запомним токен приглашения.
+  const spToken = inviteTokenFromTelegramStartParam();
+  if (spToken) setPendingInviteToken(spToken);
   // 1) Если это Telegram WebApp — пробуем автологин
   if (isTelegramWebApp()) {
     await tryTelegramLogin();
@@ -3231,6 +3283,18 @@ async function boot() {
       currentUserId = mj.userId;
       profileLinkedEmail = mj.linkedEmail != null ? mj.linkedEmail : null;
       state = await loadState();
+      // Если есть незавершённое приглашение и мы внутри Telegram — присоединим автоматически.
+      if (pendingInviteToken && isTelegramWebAppContext() && String(currentUserId || "").startsWith("tg:")) {
+        try {
+          const r = await apiJson("/api/invites/accept", { method: "POST", body: { token: pendingInviteToken } });
+          setPendingInviteToken(null);
+          state = await loadState();
+          location.hash = `#/group?id=${encodeURIComponent(r.groupId)}`;
+        } catch (e) {
+          // Не ломаем загрузку: просто покажем экран join.
+          location.hash = "#/join";
+        }
+      }
       renderApp();
       return;
     }
