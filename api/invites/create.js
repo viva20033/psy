@@ -17,7 +17,7 @@ async function loadStateForUser(supabase, userId) {
 }
 
 function isLeaderInGroup(state, groupId, userId) {
-  return Boolean(state?.groupMembers || []).some((m) => m.groupId === groupId && m.userId === userId && m.isLeader);
+  return (state?.groupMembers || []).some((m) => m.groupId === groupId && m.userId === userId && m.isLeader);
 }
 
 export default async function handler(req, res) {
