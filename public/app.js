@@ -271,36 +271,91 @@ function ensureMeMatchesSession(state) {
   // Когда пользователь залогинен, идентификатор "я" должен совпадать с userId сессии (tg:... / email:...).
   // Но если раньше данные велись под другим meId (демо u_... или другой способ входа),
   // нужно мигрировать ссылочные поля, иначе группы "пропадут" из фильтров.
+  let changed = false;
   const prevMeId = typeof state.meId === "string" ? state.meId : null;
   const nextMeId = String(currentUserId);
   const needMigrate = prevMeId && prevMeId !== nextMeId;
 
-  if (needMigrate) {
+  const hasMembershipFor = (uid) =>
+    Array.isArray(state.groupMembers) && state.groupMembers.some((m) => m && m.userId === uid && (m.isLeader || m.isParticipant));
+
+  // Если ранее мы уже перезаписали state.meId на nextMeId (и потеряли prevMeId),
+  // попробуем угадать "старого себя" по данным: чаще всего это u_... с именем "Вы"
+  // и/или с лидерскими правами в группах.
+  const guessLegacyMeId = () => {
+    if (!Array.isArray(state.groupMembers) || !Array.isArray(state.users)) return null;
+    if (hasMembershipFor(nextMeId)) return null;
+
+    const idsWithRoles = new Map(); // userId -> score
+    for (const m of state.groupMembers) {
+      if (!m || !m.userId) continue;
+      const uid = String(m.userId);
+      if (uid === nextMeId) continue;
+      let score = idsWithRoles.get(uid) || 0;
+      if (m.isLeader) score += 3;
+      if (m.isParticipant) score += 1;
+      idsWithRoles.set(uid, score);
+    }
+    if (idsWithRoles.size === 0) return null;
+
+    // бонус тем, кто в users назван "Вы"
+    for (const u of state.users) {
+      if (!u || !u.id) continue;
+      const uid = String(u.id);
+      if (!idsWithRoles.has(uid)) continue;
+      const nm = String(u.name || "").trim().toLowerCase();
+      if (nm === "вы") idsWithRoles.set(uid, (idsWithRoles.get(uid) || 0) + 5);
+    }
+
+    // берём лучший кандидат, но только если он выглядит как "локальный/демо" id
+    // (u_..., иначе рискуем перепривязать чужого пользователя).
+    let best = null;
+    let bestScore = -1;
+    for (const [uid, score] of idsWithRoles.entries()) {
+      if (!String(uid).startsWith("u_")) continue;
+      if (score > bestScore) {
+        bestScore = score;
+        best = uid;
+      }
+    }
+    return best;
+  };
+
+  const legacyMeId = needMigrate ? prevMeId : guessLegacyMeId();
+
+  if (legacyMeId && legacyMeId !== nextMeId) {
     if (Array.isArray(state.users)) {
       for (const u of state.users) {
-        if (u && u.id === prevMeId) u.id = nextMeId;
+        if (u && u.id === legacyMeId) u.id = nextMeId;
       }
     }
     if (Array.isArray(state.groupMembers)) {
       for (const m of state.groupMembers) {
-        if (m && m.userId === prevMeId) m.userId = nextMeId;
+        if (m && m.userId === legacyMeId) m.userId = nextMeId;
       }
     }
     if (Array.isArray(state.sessions)) {
       for (const s of state.sessions) {
         if (!s || !Array.isArray(s.leaders)) continue;
         for (const l of s.leaders) {
-          if (l && l.userId === prevMeId) l.userId = nextMeId;
+          if (l && l.userId === legacyMeId) l.userId = nextMeId;
         }
       }
     }
+    changed = true;
   }
 
-  state.meId = nextMeId;
+  if (state.meId !== nextMeId) {
+    state.meId = nextMeId;
+    changed = true;
+  }
   if (!Array.isArray(state.users)) state.users = [];
   if (!state.users.some((u) => u && u.id === state.meId)) {
     state.users.push({ id: state.meId, name: "Вы", profile: {} });
+    changed = true;
   }
+
+  return changed;
 }
 
 async function loadState() {
@@ -315,7 +370,13 @@ async function loadState() {
     if (!r.ok) throw new Error(await r.text());
     const st = await r.json();
     normalizeClientState(st);
-    ensureMeMatchesSession(st);
+    const changed = ensureMeMatchesSession(st);
+    // Если мигрировали идентификатор "вы" — сразу сохраним, чтобы группы вернулись навсегда.
+    if (changed) {
+      try {
+        await saveState(st);
+      } catch {}
+    }
     return st;
   } catch (e) {
     console.warn("Нет ответа от сервера, пробуем локальное хранилище.", e);
