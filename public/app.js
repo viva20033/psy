@@ -269,7 +269,34 @@ function ensureMeMatchesSession(state) {
   if (!state || typeof state !== "object") return;
   if (!currentUserId) return;
   // Когда пользователь залогинен, идентификатор "я" должен совпадать с userId сессии (tg:... / email:...).
-  state.meId = String(currentUserId);
+  // Но если раньше данные велись под другим meId (демо u_... или другой способ входа),
+  // нужно мигрировать ссылочные поля, иначе группы "пропадут" из фильтров.
+  const prevMeId = typeof state.meId === "string" ? state.meId : null;
+  const nextMeId = String(currentUserId);
+  const needMigrate = prevMeId && prevMeId !== nextMeId;
+
+  if (needMigrate) {
+    if (Array.isArray(state.users)) {
+      for (const u of state.users) {
+        if (u && u.id === prevMeId) u.id = nextMeId;
+      }
+    }
+    if (Array.isArray(state.groupMembers)) {
+      for (const m of state.groupMembers) {
+        if (m && m.userId === prevMeId) m.userId = nextMeId;
+      }
+    }
+    if (Array.isArray(state.sessions)) {
+      for (const s of state.sessions) {
+        if (!s || !Array.isArray(s.leaders)) continue;
+        for (const l of s.leaders) {
+          if (l && l.userId === prevMeId) l.userId = nextMeId;
+        }
+      }
+    }
+  }
+
+  state.meId = nextMeId;
   if (!Array.isArray(state.users)) state.users = [];
   if (!state.users.some((u) => u && u.id === state.meId)) {
     state.users.push({ id: state.meId, name: "Вы", profile: {} });
