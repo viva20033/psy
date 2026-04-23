@@ -1553,6 +1553,7 @@ function renderGroup(state, groupId) {
         const addPersonId = "gm_person";
         const addPersonNameId = "gm_new_person";
         const myLeadersCount = leaderMembers.length;
+        const inviteOutId = "gm_invite_out";
 
         const onAddNewPerson = async () => {
           const nm = (document.getElementById(addPersonNameId)?.value || "").trim();
@@ -1608,11 +1609,38 @@ function renderGroup(state, groupId) {
           renderApp();
         };
 
+        const onCreateInvite = async () => {
+          try {
+            const r = await apiJson("/api/invites/create", { method: "POST", body: { groupId: g.id, role: "participant" } });
+            const token = String(r.token || "");
+            const base = location.origin + location.pathname;
+            const link = `${base}#/join?token=${encodeURIComponent(token)}`;
+            const el = document.getElementById(inviteOutId);
+            if (el) el.value = link;
+            setPendingInviteToken(token);
+            const ok = await copyText(link);
+            alert(ok ? "Приглашение скопировано. Отправьте ссылку человеку в Telegram." : "Ссылка готова. Скопируйте её из поля ниже.");
+          } catch (e) {
+            alert(String(e.message || e));
+          }
+        };
+
         return h("div", { class: "card" }, [
           h("div", { class: "sectionTitle" }, "Управление группой"),
           h("div", { class: "small" }, [
             "Ведущий — планирует встречи и видит приватные заметки. Участник — в списке группы, без прав редактирования. ",
             "Пока данные только в вашем кабинете; позже приглашённые смогут видеть группу у себя автоматически.",
+          ]),
+          h("div", { class: "hr" }),
+          h("div", { class: "sectionTitle" }, "Приглашение (Telegram)"),
+          h("div", { class: "small" }, "MVP: создаём ссылку-приглашение. Человек должен открыть приложение через Telegram и нажать «Присоединиться»."),
+          h("div", { class: "actions profile-actions" }, [
+            h("button", { class: "btn primary", onclick: onCreateInvite }, "Скопировать приглашение"),
+            h("button", { class: "btn", onclick: () => openBotInTelegram() }, "Открыть бота"),
+          ]),
+          h("div", { class: "field" }, [
+            h("label", { class: "label", for: inviteOutId }, "Ссылка-приглашение"),
+            h("input", { id: inviteOutId, placeholder: "Нажмите «Скопировать приглашение»", readonly: true }),
           ]),
           h("div", { class: "hr" }),
           h("div", { class: "field" }, [
@@ -2970,6 +2998,116 @@ function parseHash() {
 }
 
 let state = null;
+let pendingInviteToken = null;
+
+function setPendingInviteToken(token) {
+  const t = String(token || "").trim();
+  pendingInviteToken = t || null;
+  try {
+    if (pendingInviteToken) localStorage.setItem("pendingInviteToken", pendingInviteToken);
+    else localStorage.removeItem("pendingInviteToken");
+  } catch {}
+}
+
+function loadPendingInviteToken() {
+  try {
+    const t = String(localStorage.getItem("pendingInviteToken") || "").trim();
+    pendingInviteToken = t || null;
+  } catch {
+    pendingInviteToken = null;
+  }
+  return pendingInviteToken;
+}
+
+async function copyText(text) {
+  const t = String(text || "");
+  try {
+    await navigator.clipboard.writeText(t);
+    return true;
+  } catch {
+    try {
+      const ta = h("textarea", { style: "position:fixed; left:-9999px; top:-9999px;" }, t);
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return Boolean(ok);
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function apiJson(endpoint, { method = "GET", body } = {}) {
+  const opts = { method, headers: {} };
+  if (body != null) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(`${API_BASE}${endpoint}`, opts);
+  let j = null;
+  try {
+    j = await r.json();
+  } catch {
+    j = null;
+  }
+  if (!r.ok) {
+    const msg = String(j?.message || j?.error || `HTTP ${r.status}`);
+    const err = new Error(msg);
+    err.status = r.status;
+    err.payload = j;
+    throw err;
+  }
+  return j;
+}
+
+function renderJoin() {
+  const { params } = parseHash();
+  const token = String(params.get("token") || pendingInviteToken || "").trim();
+  if (token) setPendingInviteToken(token);
+
+  const content = [];
+  content.push(h("div", { class: "card" }, [
+    h("div", { class: "sectionTitle" }, "Приглашение в группу"),
+    h("div", { class: "small" }, "Откройте приложение в Telegram и нажмите «Присоединиться». Если вы ещё не вошли — сначала выполните вход через Telegram."),
+  ]));
+
+  content.push(h("div", { class: "card" }, [
+    h("div", { class: "field" }, [
+      h("label", { class: "label" }, "Токен"),
+      h("input", { value: token, readonly: true }),
+    ]),
+    h("div", { class: "actions profile-actions" }, [
+      h("button", { class: "btn", onclick: async () => {
+        const ok = await copyText(token);
+        alert(ok ? "Скопировано." : "Не удалось скопировать.");
+      } }, "Скопировать токен"),
+      h("button", { class: "btn", onclick: () => openBotInTelegram() }, "Открыть бота"),
+    ]),
+    h("div", { class: "hr" }),
+    h("div", { class: "actions profile-actions" }, [
+      h("button", { class: "btn primary", onclick: async () => {
+        try {
+          const r = await apiJson("/api/invites/accept", { method: "POST", body: { token } });
+          setPendingInviteToken(null);
+          // перезагрузим state, чтобы группа появилась сразу
+          state = await loadState();
+          location.hash = `#/group?id=${encodeURIComponent(r.groupId)}`;
+          renderApp();
+        } catch (e) {
+          alert(String(e.message || e));
+        }
+      } }, "Присоединиться"),
+    ]),
+  ]));
+
+  return h("div", {}, [
+    topbar("Присоединиться", "Приглашение в группу по ссылке.", null),
+    h("div", { class: "content" }, content),
+    nav("groups"),
+  ]);
+}
 
 function renderApp() {
   const { path, params } = parseHash();
@@ -2983,6 +3121,10 @@ function renderApp() {
   }
   if (path === "/login") {
     app.appendChild(renderLogin(state));
+    return;
+  }
+  if (path === "/join") {
+    app.appendChild(renderJoin());
     return;
   }
   if (path === "/new-group") {
@@ -3028,6 +3170,7 @@ function renderApp() {
 window.addEventListener("hashchange", renderApp);
 
 async function boot() {
+  loadPendingInviteToken();
   // Подготовка Telegram WebApp (если внутри Telegram).
   if (isTelegramWebApp()) {
     try {
@@ -3050,6 +3193,12 @@ async function boot() {
       return;
     }
   } catch {}
+  // Если пользователь пришёл по приглашению — не теряем токен, показываем вход.
+  const { path, params } = parseHash();
+  if (path === "/join") {
+    const t = String(params.get("token") || "").trim();
+    if (t) setPendingInviteToken(t);
+  }
   location.hash = "#/login";
   state = buildDemoState();
   renderApp();
