@@ -265,6 +265,17 @@ function normalizeClientState(state) {
   }
 }
 
+function ensureMeMatchesSession(state) {
+  if (!state || typeof state !== "object") return;
+  if (!currentUserId) return;
+  // Когда пользователь залогинен, идентификатор "я" должен совпадать с userId сессии (tg:... / email:...).
+  state.meId = String(currentUserId);
+  if (!Array.isArray(state.users)) state.users = [];
+  if (!state.users.some((u) => u && u.id === state.meId)) {
+    state.users.push({ id: state.meId, name: "Вы", profile: {} });
+  }
+}
+
 async function loadState() {
   try {
     if (!currentUserId) {
@@ -277,6 +288,7 @@ async function loadState() {
     if (!r.ok) throw new Error(await r.text());
     const st = await r.json();
     normalizeClientState(st);
+    ensureMeMatchesSession(st);
     return st;
   } catch (e) {
     console.warn("Нет ответа от сервера, пробуем локальное хранилище.", e);
@@ -284,15 +296,18 @@ async function loadState() {
     if (raw) {
       const st = JSON.parse(raw);
       normalizeClientState(st);
+      ensureMeMatchesSession(st);
       return st;
     }
     const fallback = buildDemoState();
+    ensureMeMatchesSession(fallback);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback));
     return fallback;
   }
 }
 
 async function saveState(state) {
+  ensureMeMatchesSession(state);
   try {
     const r = await fetch(`${API_BASE}/api/state`, {
       method: "PUT",
