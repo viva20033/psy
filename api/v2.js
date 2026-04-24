@@ -55,6 +55,62 @@ export default async function handler(req, res) {
       return ok(res, { groups });
     }
 
+    if (action === "group_detail" && req.method === "GET") {
+      const gid = String(req.query?.groupId || "").trim();
+      if (!gid) return bad(res, 400, { error: "groupId_required" });
+
+      const mem = await supabase.from("app_group_members").select("role").eq("group_id", gid).eq("user_id", a.userId).maybeSingle();
+      if (mem.error) throw mem.error;
+      if (!mem.data) return bad(res, 403, { error: "forbidden" });
+
+      const grp = await supabase.from("app_groups").select("id,name,type,color,created_by,created_at,updated_at").eq("id", gid).maybeSingle();
+      if (grp.error) throw grp.error;
+      if (!grp.data) return bad(res, 404, { error: "group_not_found" });
+
+      const members = await supabase
+        .from("app_group_members")
+        .select("user_id,role,app_users(id,display_name,tg_username)")
+        .eq("group_id", gid);
+      if (members.error) throw members.error;
+
+      const seminars = await supabase
+        .from("app_seminars")
+        .select("id,group_id,status,title,note,theme,created_at,updated_at")
+        .eq("group_id", gid)
+        .order("created_at", { ascending: false })
+        .limit(200);
+      if (seminars.error) throw seminars.error;
+
+      const seminarIds = Array.from(new Set((seminars.data || []).map((s) => s.id).filter(Boolean)));
+      let blocks = [];
+      let leaders = [];
+      if (seminarIds.length) {
+        const b = await supabase
+          .from("app_seminar_blocks")
+          .select("id,seminar_id,day,start_time,end_time,sort_order")
+          .in("seminar_id", seminarIds)
+          .order("day", { ascending: true });
+        if (b.error) throw b.error;
+        blocks = b.data || [];
+
+        const l = await supabase
+          .from("app_seminar_leaders")
+          .select("seminar_id,user_id,days,app_users(id,display_name,tg_username)")
+          .in("seminar_id", seminarIds);
+        if (l.error) throw l.error;
+        leaders = l.data || [];
+      }
+
+      return ok(res, {
+        group: grp.data,
+        myRole: mem.data.role,
+        members: members.data || [],
+        seminars: seminars.data || [],
+        blocks,
+        leaders,
+      });
+    }
+
     if (action === "group_create" && req.method === "POST") {
       const { name, type, color } = req.body || {};
       const nm = String(name || "").trim();

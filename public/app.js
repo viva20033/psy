@@ -29,6 +29,7 @@ function setUseV2(on) {
 const v2Cache = {
   groups: { loading: false, error: null, data: null },
   upcoming: { loading: false, error: null, data: null },
+  groupDetail: {}, // groupId -> { loading, error, data }
 };
 
 async function v2FetchJson(endpoint) {
@@ -77,6 +78,20 @@ async function loadV2Upcoming() {
     v2Cache.upcoming.data = null;
   } finally {
     v2Cache.upcoming.loading = false;
+  }
+}
+
+async function loadV2GroupDetail(groupId) {
+  const gid = String(groupId || "").trim();
+  if (!gid) return;
+  const cur = v2Cache.groupDetail[gid] || { loading: false, error: null, data: null };
+  if (cur.loading) return;
+  v2Cache.groupDetail[gid] = { ...cur, loading: true, error: null };
+  try {
+    const j = await v2FetchJson(`/api/v2?action=group_detail&groupId=${encodeURIComponent(gid)}`);
+    v2Cache.groupDetail[gid] = { loading: false, error: null, data: j };
+  } catch (e) {
+    v2Cache.groupDetail[gid] = { loading: false, error: String(e.message || e), data: null };
   }
 }
 
@@ -1792,6 +1807,90 @@ function renderGroup(state, groupId) {
   const canEdit = isLeaderInGroup(state, g.id, state.meId);
   const canLeaveGroup = !canEdit && isParticipantInGroup(state, g.id, state.meId);
 
+  const v2Card = (() => {
+    if (!getUseV2()) return null;
+    const gid = String(groupId || "").trim();
+    if (!gid) return null;
+    const slot = v2Cache.groupDetail[gid] || { loading: false, error: null, data: null };
+    if (!slot.loading && slot.data == null && slot.error == null) {
+      loadV2GroupDetail(gid).then(() => renderApp());
+    }
+    if (slot.loading) {
+      return h("div", { class: "card", style: "border-color: rgba(122,167,255,.35);" }, [
+        h("div", { class: "sectionTitle" }, "v2: Группа (read-only)"),
+        h("div", { class: "empty" }, "v2: загрузка…"),
+      ]);
+    }
+    if (slot.error) {
+      return h("div", { class: "card", style: "border-color: rgba(122,167,255,.35);" }, [
+        h("div", { class: "sectionTitle" }, "v2: Группа (read-only)"),
+        h("div", { class: "empty" }, `v2: ошибка: ${slot.error}`),
+      ]);
+    }
+    const d = slot.data || {};
+    const members = Array.isArray(d.members) ? d.members : [];
+    const seminars = Array.isArray(d.seminars) ? d.seminars : [];
+    const blocks = Array.isArray(d.blocks) ? d.blocks : [];
+    const leaders = Array.isArray(d.leaders) ? d.leaders : [];
+
+    const leaderNames = (seminarId) =>
+      leaders
+        .filter((x) => x && x.seminar_id === seminarId)
+        .map((x) => x.app_users?.display_name || x.app_users?.tg_username || x.user_id)
+        .filter(Boolean);
+
+    const blocksFor = (seminarId) =>
+      blocks
+        .filter((b) => b && b.seminar_id === seminarId)
+        .sort((a, b) => String(a.day || "").localeCompare(String(b.day || "")));
+
+    const membersLines = members
+      .slice()
+      .sort((a, b) => String(a.role || "").localeCompare(String(b.role || "")))
+      .map((m) => {
+        const nm = m.app_users?.display_name || m.app_users?.tg_username || m.user_id;
+        const role = m.role === "leader" ? "ведущий" : "участник";
+        return h("div", { class: "line" }, [h("div", { class: "k" }, "•"), h("div", {}, `${nm} (${role})`)]);
+      });
+
+    const semCards = seminars.slice(0, 30).map((s) => {
+      const bl = blocksFor(s.id);
+      const leaderLine = leaderNames(s.id);
+      return h("div", { class: "card", style: "margin-top:10px;" }, [
+        h("div", { class: "row" }, [
+          h("div", { class: "groupName" }, s.title || "Семинар"),
+          h("div", { class: s.status === "подтверждено" ? "badge ok" : "badge warn" }, s.status === "подтверждено" ? "Подтверждено" : "Предварительно"),
+        ]),
+        s.theme ? h("div", { class: "small" }, `Тема: ${truncateText(s.theme, 120)}`) : null,
+        s.note ? h("div", { class: "small" }, truncateText(s.note, 160)) : null,
+        leaderLine.length ? h("div", { class: "small" }, `Ведущие: ${leaderLine.join(", ")}`) : null,
+        bl.length
+          ? h(
+              "div",
+              { class: "lines", style: "margin-top:10px;" },
+              bl.map((b) =>
+                h("div", { class: "line" }, [
+                  h("div", { class: "k" }, "День"),
+                  h("div", {}, `${formatDateRu(b.day)} — ${formatTimeRange(b.start_time, b.end_time)}`),
+                ])
+              )
+            )
+          : h("div", { class: "empty" }, "Дни не указаны."),
+      ]);
+    });
+
+    return h("div", { class: "card", style: "border-color: rgba(122,167,255,.35);" }, [
+      h("div", { class: "sectionTitle" }, "v2: Группа (read-only)"),
+      h("div", { class: "small" }, "Сквозные данные из v2 (участники и семинары)."),
+      h("div", { class: "hr" }),
+      h("div", { class: "sectionTitle" }, "v2: Участники"),
+      membersLines.length ? h("div", { class: "lines" }, membersLines) : h("div", { class: "empty" }, "Пока нет участников."),
+      h("div", { class: "hr" }),
+      h("div", { class: "sectionTitle" }, "v2: Семинары"),
+      semCards.length ? h("div", {}, semCards) : h("div", { class: "empty" }, "Пока нет семинаров."),
+    ]);
+  })();
+
   const sessions = state.sessions
     .filter((s) => s.groupId === g.id)
     .slice()
@@ -1949,6 +2048,7 @@ function renderGroup(state, groupId) {
   return h("div", {}, [
     topbar(g.name, g.type, null),
     h("div", { class: "content" }, [
+      v2Card,
       canEdit
         ? h("div", { class: "actions", style: "margin-bottom:10px;" }, [
             h("button", { class: "btn", onclick: () => (location.hash = `#/edit-group?id=${encodeURIComponent(g.id)}`) }, "Изменить группу"),
