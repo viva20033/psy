@@ -4,6 +4,11 @@ const API_BASE = "";
 let currentUserId = null;
 /** undefined — ещё не запрашивали; null — нет записи в app_accounts; string — привязанный email */
 let profileLinkedEmail = undefined;
+const SUPERADMIN_USER_ID = "tg:373134197";
+
+function isSuperAdmin() {
+  return String(currentUserId || "") === SUPERADMIN_USER_ID;
+}
 
 async function refreshLinkedEmail() {
   try {
@@ -275,53 +280,12 @@ function ensureMeMatchesSession(state) {
   const prevMeId = typeof state.meId === "string" ? state.meId : null;
   const nextMeId = String(currentUserId);
   const needMigrate = prevMeId && prevMeId !== nextMeId;
-
-  const hasMembershipFor = (uid) =>
-    Array.isArray(state.groupMembers) && state.groupMembers.some((m) => m && m.userId === uid && (m.isLeader || m.isParticipant));
-
-  // Если ранее мы уже перезаписали state.meId на nextMeId (и потеряли prevMeId),
-  // попробуем угадать "старого себя" по данным: чаще всего это u_... с именем "Вы"
-  // и/или с лидерскими правами в группах.
-  const guessLegacyMeId = () => {
-    if (!Array.isArray(state.groupMembers) || !Array.isArray(state.users)) return null;
-    if (hasMembershipFor(nextMeId)) return null;
-
-    const idsWithRoles = new Map(); // userId -> score
-    for (const m of state.groupMembers) {
-      if (!m || !m.userId) continue;
-      const uid = String(m.userId);
-      if (uid === nextMeId) continue;
-      let score = idsWithRoles.get(uid) || 0;
-      if (m.isLeader) score += 3;
-      if (m.isParticipant) score += 1;
-      idsWithRoles.set(uid, score);
-    }
-    if (idsWithRoles.size === 0) return null;
-
-    // бонус тем, кто в users назван "Вы"
-    for (const u of state.users) {
-      if (!u || !u.id) continue;
-      const uid = String(u.id);
-      if (!idsWithRoles.has(uid)) continue;
-      const nm = String(u.name || "").trim().toLowerCase();
-      if (nm === "вы") idsWithRoles.set(uid, (idsWithRoles.get(uid) || 0) + 5);
-    }
-
-    // берём лучший кандидат, но только если он выглядит как "локальный/демо" id
-    // (u_..., иначе рискуем перепривязать чужого пользователя).
-    let best = null;
-    let bestScore = -1;
-    for (const [uid, score] of idsWithRoles.entries()) {
-      if (!String(uid).startsWith("u_")) continue;
-      if (score > bestScore) {
-        bestScore = score;
-        best = uid;
-      }
-    }
-    return best;
-  };
-
-  const legacyMeId = needMigrate ? prevMeId : guessLegacyMeId();
+  // Важно: не "угадываем" legacy id — это может перепривязать чужих людей и сломать данные.
+  // Мигрируем только явный случай: старый meId был локальным u_..., а новый — реальный аккаунт.
+  const legacyMeId =
+    needMigrate && String(prevMeId).startsWith("u_") && (String(nextMeId).startsWith("tg:") || String(nextMeId).startsWith("email:"))
+      ? prevMeId
+      : null;
 
   if (legacyMeId && legacyMeId !== nextMeId) {
     if (Array.isArray(state.users)) {
@@ -358,6 +322,73 @@ function ensureMeMatchesSession(state) {
   return changed;
 }
 
+async function reconcileSharedGroupsRemote(state) {
+  if (!state) return;
+  if (!currentUserId) return;
+  // Только на сервере (Vercel). Локально endpoint отсутствует — тихо пропускаем.
+  try {
+    async function postJson(endpoint, body) {
+      const r = await fetch(`${API_BASE}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      let j = null;
+      try {
+        j = await r.json();
+      } catch {
+        j = null;
+      }
+      if (!r.ok) {
+        const msg = String(j?.message || j?.error || `HTTP ${r.status}`);
+        const err = new Error(msg);
+        err.status = r.status;
+        err.payload = j;
+        throw err;
+      }
+      return j;
+    }
+
+    const me = String(currentUserId || "");
+    const groups = Array.isArray(state.groups) ? state.groups : [];
+    const targets = [];
+    for (const g of groups) {
+      if (!g || !g.id) continue;
+      const gid = String(g.id);
+      const owner = g.ownerLeaderId ? String(g.ownerLeaderId) : null;
+      const isMember = (state.groupMembers || []).some(
+        (m) => m && m.groupId === gid && m.userId === me && (m.isLeader || m.isParticipant)
+      );
+      // Если группа "чужая" (есть ownerLeaderId) или я не владелец кабинета, но участник — подтянем встречи с сервера.
+      const should =
+        isMember &&
+        (Boolean(owner) ||
+          (state.groupMembers || []).some((m) => m && m.groupId === gid && m.isLeader && m.userId && m.userId !== me));
+      if (should) targets.push(gid);
+    }
+    const uniq = Array.from(new Set(targets));
+    for (const gid of uniq) {
+      try {
+        await postJson("/api/sync/shared-group", { groupId: gid });
+      } catch {
+        // ignore: endpoint может быть недоступен локально
+      }
+    }
+    if (uniq.length) {
+      // перечитаем state после серверного merge
+      const r = await fetch(`${API_BASE}/api/state`);
+      if (r.ok) {
+        const st = await r.json();
+        normalizeClientState(st);
+        ensureMeMatchesSession(st);
+        Object.assign(state, st);
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
 async function loadState() {
   try {
     if (!currentUserId) {
@@ -370,13 +401,8 @@ async function loadState() {
     if (!r.ok) throw new Error(await r.text());
     const st = await r.json();
     normalizeClientState(st);
-    const changed = ensureMeMatchesSession(st);
-    // Если мигрировали идентификатор "вы" — сразу сохраним, чтобы группы вернулись навсегда.
-    if (changed) {
-      try {
-        await saveState(st);
-      } catch {}
-    }
+    ensureMeMatchesSession(st);
+    await reconcileSharedGroupsRemote(st);
     return st;
   } catch (e) {
     console.warn("Нет ответа от сервера, пробуем локальное хранилище.", e);
@@ -1017,6 +1043,7 @@ function nav(current) {
       mk("#/groups", "Группы", "groups"),
       mk("#/create", "Создать", "create"),
       mk("#/profile", "Профиль", "profile"),
+      isSuperAdmin() ? mk("#/admin", "Админ", "admin") : null,
     ]),
   ]);
 }
@@ -1736,7 +1763,7 @@ function renderGroup(state, groupId) {
           h("div", { class: "sectionTitle" }, "Управление группой"),
           h("div", { class: "small" }, [
             "Ведущий — планирует встречи и видит приватные заметки. Участник — в списке группы, без прав редактирования. ",
-            "Пока данные только в вашем кабинете; позже приглашённые смогут видеть группу у себя автоматически.",
+            "Участники видят расписание встреч; обновления подтягиваются при следующем открытии приложения.",
           ]),
           h("div", { class: "hr" }),
           h("div", { class: "sectionTitle" }, "Приглашение (Telegram)"),
@@ -2225,6 +2252,46 @@ function renderProfile(state) {
       ]),
     ]),
     nav("profile"),
+  ]);
+}
+
+function renderAdmin() {
+  if (!isSuperAdmin()) return renderNotFound("Нет доступа");
+
+  return h("div", {}, [
+    topbar("Админ", "Служебный раздел (пока базовый).", null),
+    h("div", { class: "content" }, [
+      h("div", { class: "card" }, [
+        h("div", { class: "sectionTitle" }, "Диагностика"),
+        h("div", { class: "small" }, `userId: ${String(currentUserId || "—")}`),
+        h("div", { class: "small" }, `Telegram WebApp: ${isTelegramWebAppContext() ? "да" : "нет"}`),
+      ]),
+      h("div", { class: "card" }, [
+        h("div", { class: "sectionTitle" }, "Действия"),
+        h("div", { class: "actions profile-actions" }, [
+          h("button", { class: "btn", onclick: () => (location.hash = "#/join") }, "Экран приглашения"),
+          h(
+            "button",
+            {
+              class: "btn danger",
+              onclick: async () => {
+                if (!confirm("Сбросить демо-данные для текущего пользователя?")) return;
+                try {
+                  await fetch(`${API_BASE}/api/reset-demo`, { method: "POST" });
+                  state = await loadState();
+                  location.hash = "#/groups";
+                  renderApp();
+                } catch (e) {
+                  alert("Не удалось сбросить.");
+                }
+              },
+            },
+            "Сбросить демо"
+          ),
+        ]),
+      ]),
+    ]),
+    nav("admin"),
   ]);
 }
 
@@ -3313,6 +3380,7 @@ function renderApp() {
   else if (path === "/clients") app.appendChild(renderClients(state));
   else if (path === "/client") app.appendChild(renderClient(state, params.get("id")));
   else if (path === "/profile") app.appendChild(renderProfile(state));
+  else if (path === "/admin") app.appendChild(renderAdmin());
   else if (path === "/wizard") app.appendChild(renderWizard(state, params.get("groupId")));
   else if (path === "/session") app.appendChild(renderSession(state, params.get("id")));
   else if (path === "/edit-session") app.appendChild(renderEditSession(state, params.get("id")));

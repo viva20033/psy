@@ -12,10 +12,6 @@ async function ensureRow(supabase, rowId) {
   return empty;
 }
 
-function getUserName(state, userId) {
-  return (state?.users || []).find((u) => u.id === userId)?.name || null;
-}
-
 function upsertUser(state, user) {
   if (!user?.id) return;
   const idx = (state.users || []).findIndex((u) => u.id === user.id);
@@ -35,8 +31,32 @@ function upsertGroupMember(state, m) {
   else state.groupMembers[idx] = { ...state.groupMembers[idx], ...m };
 }
 
-function copySessionsForGroup(leaderState, groupId) {
-  return (leaderState.sessions || []).filter((s) => s.groupId === groupId).map((s) => JSON.parse(JSON.stringify(s)));
+function mergeUsers(joinerState, leaderState) {
+  joinerState.users = Array.isArray(joinerState.users) ? joinerState.users : [];
+  const leaderUsers = Array.isArray(leaderState.users) ? leaderState.users : [];
+  for (const u of leaderUsers) {
+    if (!u || !u.id) continue;
+    upsertUser(joinerState, JSON.parse(JSON.stringify(u)));
+  }
+}
+
+function mergeGroupMembersForGroup(joinerState, leaderState, groupId) {
+  joinerState.groupMembers = Array.isArray(joinerState.groupMembers) ? joinerState.groupMembers : [];
+  const leaderMembers = (leaderState.groupMembers || []).filter((m) => m && m.groupId === groupId);
+  for (const m of leaderMembers) {
+    upsertGroupMember(joinerState, JSON.parse(JSON.stringify(m)));
+  }
+}
+
+function mergeSessionsForGroup(joinerState, leaderState, groupId) {
+  joinerState.sessions = Array.isArray(joinerState.sessions) ? joinerState.sessions : [];
+  const leaderSessions = (leaderState.sessions || []).filter((s) => s && s.groupId === groupId);
+  for (const s of leaderSessions) {
+    const copy = JSON.parse(JSON.stringify(s));
+    const idx = joinerState.sessions.findIndex((x) => x && x.id === copy.id);
+    if (idx === -1) joinerState.sessions.push(copy);
+    else joinerState.sessions[idx] = copy;
+  }
 }
 
 export default async function handler(req, res) {
@@ -72,21 +92,22 @@ export default async function handler(req, res) {
 
     const joinerState = await ensureRow(supabase, a.userId);
 
-    // Мини-MVP: копируем группу и её встречи к участнику (без дальнейшей синхронизации).
     joinerState.users = Array.isArray(joinerState.users) ? joinerState.users : [];
     joinerState.groups = Array.isArray(joinerState.groups) ? joinerState.groups : [];
     joinerState.groupMembers = Array.isArray(joinerState.groupMembers) ? joinerState.groupMembers : [];
     joinerState.sessions = Array.isArray(joinerState.sessions) ? joinerState.sessions : [];
 
-    const leaderName = getUserName(leaderState, leaderId) || "Тренер";
-    upsertUser(joinerState, { id: leaderId, name: leaderName, profile: {} });
-    upsertGroup(joinerState, JSON.parse(JSON.stringify(g)));
-    for (const s of copySessionsForGroup(leaderState, groupId)) {
-      if (!joinerState.sessions.some((x) => x.id === s.id)) joinerState.sessions.push(s);
-    }
+    // MVP "сквозной синхронизации": у участника группа ссылается на кабинет ведущего через ownerLeaderId,
+    // а встречи/состав подтягиваются из leaderState при присоединении и далее при входе (см. reconcile на клиенте).
+    const gCopy = JSON.parse(JSON.stringify(g));
+    gCopy.ownerLeaderId = leaderId;
+    upsertGroup(joinerState, gCopy);
 
-    // Лидер всегда есть как ведущий, присоединившийся — как participant/leader.
-    upsertGroupMember(joinerState, { groupId, userId: leaderId, isLeader: true, isParticipant: false });
+    mergeUsers(joinerState, leaderState);
+    mergeGroupMembersForGroup(joinerState, leaderState, groupId);
+    mergeSessionsForGroup(joinerState, leaderState, groupId);
+
+    // Присоединившийся — как participant/leader (не дублируем membership ведущего из leaderState, если он уже есть).
     upsertGroupMember(joinerState, {
       groupId,
       userId: a.userId,

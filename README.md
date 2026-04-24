@@ -66,6 +66,8 @@ create index if not exists app_invites_group_id_idx on app_invites (group_id);
 - UI: `/`
 - Вход: `/#/login`
 - API: `/api/state` (GET/PUT), `/api/reset-demo` (POST)
+- Приглашения: `POST /api/invites/create`, `POST /api/invites/accept`
+- Синхронизация “общей группы” для участника: `POST /api/sync/shared-group` (тело `{ "groupId": "..." }`)
 
 ## Вход и привязка
 

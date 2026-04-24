@@ -91,3 +91,9 @@ export function requireUserId(req) {
   return { ok: true, userId: v.sub };
 }
 
+export function isSuperAdminUserId(userId) {
+  const adminTgId = String(process.env.SUPERADMIN_TG_ID || "").trim();
+  if (!adminTgId) return false;
+  return String(userId || "") === `tg:${adminTgId}`;
+}
+
