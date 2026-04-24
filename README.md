@@ -49,6 +49,12 @@ create index if not exists app_invites_created_by_idx on app_invites (created_by
 create index if not exists app_invites_group_id_idx on app_invites (group_id);
 ```
 
+## v2 (в разработке): общие таблицы для “сквозной” синхронизации
+
+`app_state` удобен как демо, но для общего приложения (одна группа/встреча для всех) нужна нормальная схема данных.
+
+В Supabase SQL Editor выполните файл `supabase_v2.sql`.
+
 ## 2) Vercel: переменные окружения
 
 В Vercel → Project → Settings → Environment Variables:
