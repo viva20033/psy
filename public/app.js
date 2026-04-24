@@ -2258,6 +2258,28 @@ function renderProfile(state) {
 function renderAdmin() {
   if (!isSuperAdmin()) return renderNotFound("Нет доступа");
 
+  const uidId = "adm_uid";
+  const emailId = "adm_email";
+  const outId = "adm_out";
+
+  const setOut = (txt) => {
+    const el = document.getElementById(outId);
+    if (el) el.value = String(txt || "");
+  };
+
+  const getJson = async (endpoint) => {
+    const r = await fetch(`${API_BASE}${endpoint}`);
+    const t = await r.text();
+    let j;
+    try {
+      j = JSON.parse(t);
+    } catch {
+      j = { raw: t };
+    }
+    if (!r.ok) throw new Error(String(j?.error || j?.message || `HTTP ${r.status}`));
+    return j;
+  };
+
   return h("div", {}, [
     topbar("Админ", "Служебный раздел (пока базовый).", null),
     h("div", { class: "content" }, [
@@ -2265,6 +2287,61 @@ function renderAdmin() {
         h("div", { class: "sectionTitle" }, "Диагностика"),
         h("div", { class: "small" }, `userId: ${String(currentUserId || "—")}`),
         h("div", { class: "small" }, `Telegram WebApp: ${isTelegramWebAppContext() ? "да" : "нет"}`),
+      ]),
+      h("div", { class: "card" }, [
+        h("div", { class: "sectionTitle" }, "Где данные? (поиск)"),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: uidId }, "Посмотреть app_state по userId"),
+          h("input", { id: uidId, placeholder: "например: tg:373134197" }),
+        ]),
+        h("div", { class: "actions profile-actions" }, [
+          h(
+            "button",
+            {
+              class: "btn primary",
+              onclick: async () => {
+                try {
+                  const uid = String(document.getElementById(uidId)?.value || "").trim();
+                  const j = await getJson(`/api/admin/state-get?userId=${encodeURIComponent(uid)}`);
+                  setOut(JSON.stringify({ row: j.row, counts: j.counts }, null, 2));
+                } catch (e) {
+                  setOut(String(e.message || e));
+                }
+              },
+            },
+            "Проверить"
+          ),
+          h("button", { class: "btn", onclick: () => setOut("") }, "Очистить"),
+        ]),
+        h("div", { class: "hr" }),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: emailId }, "Найти userId по привязанной почте"),
+          h("input", { id: emailId, placeholder: "email@example.com" }),
+        ]),
+        h("div", { class: "actions profile-actions" }, [
+          h(
+            "button",
+            {
+              class: "btn",
+              onclick: async () => {
+                try {
+                  const email = String(document.getElementById(emailId)?.value || "").trim();
+                  const j = await getJson(`/api/admin/lookup-email?email=${encodeURIComponent(email)}`);
+                  document.getElementById(uidId).value = j.userId;
+                  setOut(JSON.stringify(j, null, 2));
+                } catch (e) {
+                  setOut(String(e.message || e));
+                }
+              },
+            },
+            "Найти"
+          ),
+        ]),
+        h("div", { class: "hr" }),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: outId }, "Результат"),
+          h("textarea", { id: outId, rows: "8", style: "width:100%; resize:vertical;" }),
+        ]),
       ]),
       h("div", { class: "card" }, [
         h("div", { class: "sectionTitle" }, "Действия"),
