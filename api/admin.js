@@ -58,6 +58,143 @@ export default async function handler(req, res) {
 
     const supabase = getSupabaseAdmin();
 
+    if (action === "v2_import_leader") {
+      if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+      const userId = String(req.query?.userId || a.userId || "").trim();
+      if (!userId) return res.status(400).json({ error: "userId required" });
+
+      const { data, error } = await supabase.from("app_state").select("state").eq("id", userId).maybeSingle();
+      if (error) throw error;
+      const st = data?.state;
+      if (!st) return res.status(404).json({ error: "state_not_found" });
+
+      const users = Array.isArray(st.users) ? st.users : [];
+      const groups = Array.isArray(st.groups) ? st.groups : [];
+      const members = Array.isArray(st.groupMembers) ? st.groupMembers : [];
+      const sessions = Array.isArray(st.sessions) ? st.sessions : [];
+
+      // groups where user is leader (old model: isLeader boolean)
+      const leaderGroupIds = new Set(
+        members.filter((m) => m && m.userId === userId && m.isLeader).map((m) => String(m.groupId))
+      );
+
+      const tgUserIdsInScope = new Set([userId]);
+      for (const m of members) {
+        if (!m || !leaderGroupIds.has(String(m.groupId))) continue;
+        const uid = String(m.userId || "");
+        if (uid.startsWith("tg:") || uid.startsWith("email:")) tgUserIdsInScope.add(uid);
+      }
+
+      // 1) app_users upsert (minimal)
+      for (const uid of tgUserIdsInScope) {
+        const u = users.find((x) => x && x.id === uid);
+        const row = { id: uid, display_name: u?.name || null };
+        const up = await supabase.from("app_users").upsert(row);
+        if (up.error) throw up.error;
+      }
+
+      // 2) app_groups + app_group_members
+      let importedGroups = 0;
+      let importedMembers = 0;
+      for (const g of groups) {
+        if (!g || !leaderGroupIds.has(String(g.id))) continue;
+        const gRow = {
+          id: String(g.id),
+          name: String(g.name || "Группа"),
+          type: String(g.type || "другое"),
+          color: String(g.color || "#7aa7ff"),
+          created_by: userId,
+        };
+        const gi = await supabase.from("app_groups").upsert(gRow);
+        if (gi.error) throw gi.error;
+        importedGroups++;
+
+        const scopeMembers = members.filter((m) => m && String(m.groupId) === String(g.id));
+        for (const m of scopeMembers) {
+          const uid = String(m.userId || "");
+          if (!(uid.startsWith("tg:") || uid.startsWith("email:"))) continue; // skip local contacts for now
+          const role = m.isLeader ? "leader" : "participant";
+          const mi = await supabase.from("app_group_members").upsert({ group_id: String(g.id), user_id: uid, role });
+          if (mi.error) throw mi.error;
+          importedMembers++;
+        }
+      }
+
+      // 3) seminars + blocks + leaders
+      let importedSeminars = 0;
+      let importedBlocks = 0;
+      let importedLeaders = 0;
+      const sessionsInScope = sessions.filter((s) => s && leaderGroupIds.has(String(s.groupId)));
+      for (const s of sessionsInScope) {
+        const semRow = {
+          id: String(s.id),
+          group_id: String(s.groupId),
+          status: String(s.status || "предварительно"),
+          title: null,
+          note: s.note != null ? String(s.note) : null,
+          theme: s.theme != null ? String(s.theme) : null,
+          summary: s.summary != null ? String(s.summary) : null,
+          private_notes: s.privateNotes != null ? String(s.privateNotes) : null,
+          created_by: userId,
+        };
+        const si = await supabase.from("app_seminars").upsert(semRow);
+        if (si.error) throw si.error;
+        importedSeminars++;
+
+        const blocks = Array.isArray(s.blocks) ? s.blocks : [];
+        for (let i = 0; i < blocks.length; i++) {
+          const b = blocks[i] || {};
+          const day = String(b.date || "").trim();
+          if (!day) continue;
+          const id = b.id ? String(b.id) : `${String(s.id)}_${day}_${i}`;
+          const bi = await supabase.from("app_seminar_blocks").upsert({
+            id,
+            seminar_id: String(s.id),
+            day,
+            start_time: String(b.startTime || ""),
+            end_time: String(b.endTime || ""),
+            sort_order: i,
+          });
+          if (bi.error) throw bi.error;
+          importedBlocks++;
+        }
+
+        const leaders = Array.isArray(s.leaders) ? s.leaders : [];
+        for (const l of leaders) {
+          const uid = String(l?.userId || "");
+          if (!(uid.startsWith("tg:") || uid.startsWith("email:"))) continue;
+          if (!tgUserIdsInScope.has(uid)) {
+            // ensure leader exists in app_users
+            const u = users.find((x) => x && x.id === uid);
+            const up = await supabase.from("app_users").upsert({ id: uid, display_name: u?.name || null });
+            if (up.error) throw up.error;
+            tgUserIdsInScope.add(uid);
+          }
+          const li = await supabase.from("app_seminar_leaders").upsert({
+            seminar_id: String(s.id),
+            user_id: uid,
+            days: l.days === "all" ? "all" : Array.isArray(l.days) ? l.days : "all",
+          });
+          if (li.error) throw li.error;
+          importedLeaders++;
+        }
+      }
+
+      return res.status(200).json({
+        ok: true,
+        scope: { userId, leaderGroups: leaderGroupIds.size },
+        imported: {
+          groups: importedGroups,
+          members: importedMembers,
+          seminars: importedSeminars,
+          blocks: importedBlocks,
+          seminarLeaders: importedLeaders,
+        },
+        note: "Контакты без tg:/email: пока не импортируются (появятся после входа или отдельной модели contacts).",
+      });
+    }
+
     if (action === "state_get") {
       if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
       const userId = String(req.query?.userId || "").trim();

@@ -2456,6 +2456,40 @@ function renderAdmin() {
             },
             "Сохранить"
           ),
+          h(
+            "button",
+            {
+              class: "btn",
+              onclick: async () => {
+                try {
+                  const uid = String(currentUserId || "");
+                  if (!confirm("Импортировать в v2 ваши группы, где вы ведущий?")) return;
+                  const r = await fetch(`${API_BASE}/api/admin?action=v2_import_leader&userId=${encodeURIComponent(uid)}`, {
+                    method: "POST",
+                  });
+                  const t = await r.text();
+                  let j;
+                  try {
+                    j = JSON.parse(t);
+                  } catch {
+                    j = { raw: t };
+                  }
+                  if (!r.ok) throw new Error(String(j?.error || j?.message || `HTTP ${r.status}`));
+                  setOut(JSON.stringify(j, null, 2));
+                  // обновим v2 read-only карточки
+                  v2Cache.groups.data = null;
+                  v2Cache.groups.error = null;
+                  v2Cache.upcoming.data = null;
+                  v2Cache.upcoming.error = null;
+                  renderApp();
+                  alert("Импорт завершён. Включите v2 и проверьте «Группы» / «Ближайшее».");
+                } catch (e) {
+                  alert(String(e.message || e));
+                }
+              },
+            },
+            "Импорт в v2"
+          ),
         ]),
       ]),
       h("div", { class: "card" }, [
