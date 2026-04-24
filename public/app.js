@@ -2260,6 +2260,7 @@ function renderAdmin() {
 
   const uidId = "adm_uid";
   const emailId = "adm_email";
+  const fromId = "adm_from";
   const outId = "adm_out";
 
   const setOut = (txt) => {
@@ -2303,7 +2304,31 @@ function renderAdmin() {
                 try {
                   const uid = String(document.getElementById(uidId)?.value || "").trim();
                   const j = await getJson(`/api/admin?action=state_get&userId=${encodeURIComponent(uid)}`);
-                  setOut(JSON.stringify({ row: j.row, counts: j.counts }, null, 2));
+                  const st = j.state || {};
+                  const memberCounts = {};
+                  for (const m of Array.isArray(st.groupMembers) ? st.groupMembers : []) {
+                    if (!m || !m.userId) continue;
+                    const k = String(m.userId);
+                    memberCounts[k] = (memberCounts[k] || 0) + 1;
+                  }
+                  const topMembers = Object.entries(memberCounts)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 10)
+                    .map(([userId, cnt]) => ({ userId, cnt }));
+
+                  setOut(
+                    JSON.stringify(
+                      {
+                        row: j.row,
+                        counts: j.counts,
+                        stateMeId: st.meId,
+                        topMemberUserIds: topMembers,
+                        users: (Array.isArray(st.users) ? st.users : []).map((u) => ({ id: u?.id, name: u?.name })).slice(0, 20),
+                      },
+                      null,
+                      2
+                    )
+                  );
                 } catch (e) {
                   setOut(String(e.message || e));
                 }
@@ -2312,6 +2337,39 @@ function renderAdmin() {
             "Проверить"
           ),
           h("button", { class: "btn", onclick: () => setOut("") }, "Очистить"),
+        ]),
+        h("div", { class: "hr" }),
+        h("div", { class: "sectionTitle" }, "Починка: перепривязать meId"),
+        h("div", { class: "small" }, "Если группы не отображаются, чаще всего ваши записи в groupMembers ссылаются на старый id (например u_...)."),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: fromId }, "Старый id (из вывода выше)"),
+          h("input", { id: fromId, placeholder: "например: u_abc123_..." }),
+        ]),
+        h("div", { class: "actions profile-actions" }, [
+          h(
+            "button",
+            {
+              class: "btn danger",
+              onclick: async () => {
+                try {
+                  const uid = String(document.getElementById(uidId)?.value || "").trim();
+                  const from = String(document.getElementById(fromId)?.value || "").trim();
+                  if (!uid || !from) return alert("Нужны userId и старый id.");
+                  if (!confirm(`Заменить во всём state id ${from} → ${uid}?`)) return;
+                  const j = await getJson(
+                    `/api/admin?action=migrate_me&userId=${encodeURIComponent(uid)}&from=${encodeURIComponent(from)}`
+                  );
+                  setOut(JSON.stringify(j, null, 2));
+                  // Перезагрузим данные текущего пользователя, чтобы UI сразу обновился
+                  state = await loadState();
+                  renderApp();
+                } catch (e) {
+                  setOut(String(e.message || e));
+                }
+              },
+            },
+            "Перепривязать"
+          ),
         ]),
         h("div", { class: "hr" }),
         h("div", { class: "field" }, [
