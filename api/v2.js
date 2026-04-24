@@ -165,11 +165,16 @@ export default async function handler(req, res) {
       const dd = String(today.getUTCDate()).padStart(2, "0");
       const day = `${yyyy}-${mm}-${dd}`;
 
+      const mem = await supabase.from("app_group_members").select("group_id").eq("user_id", a.userId);
+      if (mem.error) throw mem.error;
+      const groupIds = Array.from(new Set((mem.data || []).map((x) => x.group_id).filter(Boolean)));
+      if (!groupIds.length) return ok(res, { blocks: [] });
+
       const { data, error } = await supabase
         .from("app_seminar_blocks")
-        .select("id,day,start_time,end_time,sort_order,app_seminars(id,group_id,status,title,note,theme),app_seminars!inner(app_groups(id,name,type,color),app_group_members!inner(user_id))")
+        .select("id,day,start_time,end_time,sort_order,app_seminars!inner(id,group_id,status,title,note,theme,app_groups!inner(id,name,type,color))")
         .gte("day", day)
-        .eq("app_seminars.app_group_members.user_id", a.userId)
+        .in("app_seminars.group_id", groupIds)
         .order("day", { ascending: true })
         .limit(40);
 
