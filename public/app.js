@@ -5,9 +5,79 @@ let currentUserId = null;
 /** undefined — ещё не запрашивали; null — нет записи в app_accounts; string — привязанный email */
 let profileLinkedEmail = undefined;
 const SUPERADMIN_USER_ID = "tg:373134197";
+const V2_FLAG_KEY = "psy_use_v2";
 
 function isSuperAdmin() {
   return String(currentUserId || "") === SUPERADMIN_USER_ID;
+}
+
+function getUseV2() {
+  try {
+    return localStorage.getItem(V2_FLAG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setUseV2(on) {
+  try {
+    if (on) localStorage.setItem(V2_FLAG_KEY, "1");
+    else localStorage.removeItem(V2_FLAG_KEY);
+  } catch {}
+}
+
+const v2Cache = {
+  groups: { loading: false, error: null, data: null },
+  upcoming: { loading: false, error: null, data: null },
+};
+
+async function v2FetchJson(endpoint) {
+  const r = await fetch(`${API_BASE}${endpoint}`);
+  const txt = await r.text();
+  let j = null;
+  try {
+    j = JSON.parse(txt);
+  } catch {
+    j = { raw: txt };
+  }
+  if (!r.ok || j?.ok === false) {
+    const msg = String(j?.message || j?.error || `HTTP ${r.status}`);
+    const err = new Error(msg);
+    err.status = r.status;
+    err.payload = j;
+    throw err;
+  }
+  return j;
+}
+
+async function loadV2Groups() {
+  if (v2Cache.groups.loading) return;
+  v2Cache.groups.loading = true;
+  v2Cache.groups.error = null;
+  try {
+    const j = await v2FetchJson("/api/v2?action=groups_list");
+    v2Cache.groups.data = j.groups || [];
+  } catch (e) {
+    v2Cache.groups.error = String(e.message || e);
+    v2Cache.groups.data = null;
+  } finally {
+    v2Cache.groups.loading = false;
+  }
+}
+
+async function loadV2Upcoming() {
+  if (v2Cache.upcoming.loading) return;
+  v2Cache.upcoming.loading = true;
+  v2Cache.upcoming.error = null;
+  try {
+    const j = await v2FetchJson("/api/v2?action=upcoming");
+    v2Cache.upcoming.data = j.blocks || [];
+  } catch (e) {
+    v2Cache.upcoming.error = String(e.message || e);
+    v2Cache.upcoming.data = null;
+  } finally {
+    v2Cache.upcoming.loading = false;
+  }
 }
 
 async function refreshLinkedEmail() {
@@ -1084,6 +1154,36 @@ function renderUpcoming(state, mode = "lead", urlParams = null) {
   const me = getMe(state);
   const subtitle = `${me?.name ?? "Пользователь"} • здесь только предстоящие; прошедшие — в «Вид на год»`;
 
+  const v2Card = (() => {
+    if (!getUseV2()) return null;
+    if (!v2Cache.upcoming.loading && v2Cache.upcoming.data == null && v2Cache.upcoming.error == null) {
+      loadV2Upcoming().then(() => renderApp());
+    }
+
+    const body = v2Cache.upcoming.loading
+      ? h("div", { class: "empty" }, "v2: загрузка…")
+      : v2Cache.upcoming.error
+        ? h("div", { class: "empty" }, `v2: ошибка: ${v2Cache.upcoming.error}`)
+        : (() => {
+            const blocks = Array.isArray(v2Cache.upcoming.data) ? v2Cache.upcoming.data : [];
+            if (!blocks.length) return h("div", { class: "empty" }, "v2: пока нет ближайших блоков.");
+            const lines = blocks.slice(0, 12).map((b) => {
+              const sem = b.app_seminars || null;
+              const g = sem?.app_groups || null;
+              const title = g?.name || "Группа";
+              const when = `${formatDateRu(b.day)} — ${formatTimeRange(b.start_time, b.end_time)}`;
+              return h("div", { class: "line" }, [h("div", { class: "k" }, "•"), h("div", {}, `${title}: ${when}`)]);
+            });
+            return h("div", { class: "lines" }, lines);
+          })();
+
+    return h("div", { class: "card", style: "border-color: rgba(122,167,255,.35);" }, [
+      h("div", { class: "sectionTitle" }, "v2: Ближайшее (read-only)"),
+      h("div", { class: "small" }, "Данные из новых общих таблиц. Пока только просмотр."),
+      body,
+    ]);
+  })();
+
   const groupsInMode = groupsVisibleInMode(state, mode);
   const groupFilterRaw = params.get("group") || "";
   const groupFilter = groupsInMode.some((g) => g.id === groupFilterRaw) ? groupFilterRaw : "";
@@ -1230,6 +1330,7 @@ function renderUpcoming(state, mode = "lead", urlParams = null) {
           "Вид на год"
         ),
       ]),
+      v2Card,
       filterCard,
       h("div", { class: "sectionTitle" }, "Список встреч"),
       list,
@@ -1580,6 +1681,42 @@ function renderGroups(state, tab = "lead") {
     { label: "Где я участник", pressed: tab === "part", onClick: () => (location.hash = "#/groups?tab=part") },
   ];
 
+  const v2Card = (() => {
+    if (!getUseV2()) return null;
+    if (!v2Cache.groups.loading && v2Cache.groups.data == null && v2Cache.groups.error == null) {
+      loadV2Groups().then(() => renderApp());
+    }
+
+    const body = v2Cache.groups.loading
+      ? h("div", { class: "empty" }, "v2: загрузка…")
+      : v2Cache.groups.error
+        ? h("div", { class: "empty" }, `v2: ошибка: ${v2Cache.groups.error}`)
+        : (() => {
+            const rows = Array.isArray(v2Cache.groups.data) ? v2Cache.groups.data : [];
+            if (!rows.length) return h("div", { class: "empty" }, "v2: пока нет групп.");
+            return h(
+              "div",
+              {},
+              rows.slice(0, 30).map((r) => {
+                const g = r.group || {};
+                const role = r.role === "leader" ? "ведущий" : "участник";
+                return h("div", { class: "listCard" }, [
+                  h("div", {}, [
+                    h("div", { class: "listTitle" }, g.name || "Группа"),
+                    h("div", { class: "listMeta" }, `${g.type || ""} • роль: ${role}`),
+                  ]),
+                ]);
+              })
+            );
+          })();
+
+    return h("div", { class: "card", style: "border-color: rgba(122,167,255,.35);" }, [
+      h("div", { class: "sectionTitle" }, "v2: Мои группы (read-only)"),
+      h("div", { class: "small" }, "Данные из новых общих таблиц. Пока только просмотр."),
+      body,
+    ]);
+  })();
+
   const groups = state.groups.filter((g) =>
     tab === "lead" ? isLeaderInGroup(state, g.id, state.meId) : isParticipantInGroup(state, g.id, state.meId)
   );
@@ -1608,7 +1745,7 @@ function renderGroups(state, tab = "lead") {
 
   return h("div", {}, [
     topbar("Группы", "Откройте группу, чтобы увидеть встречи и участников.", pills),
-    h("div", { class: "content" }, [list]),
+    h("div", { class: "content" }, [v2Card, list]),
     nav("groups"),
   ]);
 }
@@ -2261,6 +2398,7 @@ function renderAdmin() {
   const uidId = "adm_uid";
   const emailId = "adm_email";
   const fromId = "adm_from";
+  const v2Id = "adm_v2";
   const outId = "adm_out";
 
   const setOut = (txt) => {
@@ -2288,6 +2426,37 @@ function renderAdmin() {
         h("div", { class: "sectionTitle" }, "Диагностика"),
         h("div", { class: "small" }, `userId: ${String(currentUserId || "—")}`),
         h("div", { class: "small" }, `Telegram WebApp: ${isTelegramWebAppContext() ? "да" : "нет"}`),
+      ]),
+      h("div", { class: "card" }, [
+        h("div", { class: "sectionTitle" }, "Эксперимент v2"),
+        h("div", { class: "small" }, "Включает read-only блоки v2 в «Группы» и «Ближайшее» только на этом устройстве."),
+        h("div", { class: "field" }, [
+          h("label", { class: "label", for: v2Id }, "Использовать v2 (read-only)"),
+          h("select", { id: v2Id }, [
+            h("option", { value: "0", ...(getUseV2() ? {} : { selected: true }) }, "Нет"),
+            h("option", { value: "1", ...(getUseV2() ? { selected: true } : {}) }, "Да"),
+          ]),
+        ]),
+        h("div", { class: "actions profile-actions" }, [
+          h(
+            "button",
+            {
+              class: "btn primary",
+              onclick: async () => {
+                const v = document.getElementById(v2Id)?.value === "1";
+                setUseV2(v);
+                // сброс кеша
+                v2Cache.groups.data = null;
+                v2Cache.groups.error = null;
+                v2Cache.upcoming.data = null;
+                v2Cache.upcoming.error = null;
+                renderApp();
+                alert(v ? "v2 включён (read-only)." : "v2 выключен.");
+              },
+            },
+            "Сохранить"
+          ),
+        ]),
       ]),
       h("div", { class: "card" }, [
         h("div", { class: "sectionTitle" }, "Где данные? (поиск)"),
