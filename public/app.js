@@ -1741,7 +1741,7 @@ function renderGroup(state, groupId) {
 
         const onCreateInvite = async () => {
           try {
-            const r = await apiJson("/api/invites/create", { method: "POST", body: { groupId: g.id, role: "participant" } });
+            const r = await apiJson("/api/invites?action=create", { method: "POST", body: { groupId: g.id, role: "participant" } });
             const token = String(r.token || "");
             const links = inviteLinksForToken(token);
             const link = links.tg || links.web;
@@ -2302,7 +2302,7 @@ function renderAdmin() {
               onclick: async () => {
                 try {
                   const uid = String(document.getElementById(uidId)?.value || "").trim();
-                  const j = await getJson(`/api/admin/state-get?userId=${encodeURIComponent(uid)}`);
+                  const j = await getJson(`/api/admin?action=state_get&userId=${encodeURIComponent(uid)}`);
                   setOut(JSON.stringify({ row: j.row, counts: j.counts }, null, 2));
                 } catch (e) {
                   setOut(String(e.message || e));
@@ -2326,7 +2326,7 @@ function renderAdmin() {
               onclick: async () => {
                 try {
                   const email = String(document.getElementById(emailId)?.value || "").trim();
-                  const j = await getJson(`/api/admin/lookup-email?email=${encodeURIComponent(email)}`);
+                  const j = await getJson(`/api/admin?action=lookup_email&email=${encodeURIComponent(email)}`);
                   document.getElementById(uidId).value = j.userId;
                   setOut(JSON.stringify(j, null, 2));
                 } catch (e) {
@@ -3373,7 +3373,7 @@ function renderJoin() {
             disabled: canAccept ? null : true,
             onclick: async () => {
               try {
-                const r = await apiJson("/api/invites/accept", { method: "POST", body: { token } });
+          const r = await apiJson("/api/invites?action=accept", { method: "POST", body: { token } });
                 setPendingInviteToken(null);
                 state = await loadState();
                 location.hash = `#/group?id=${encodeURIComponent(r.groupId)}`;
@@ -3492,7 +3492,7 @@ async function boot() {
       // Если есть незавершённое приглашение и мы внутри Telegram — присоединим автоматически.
       if (pendingInviteToken && isTelegramWebAppContext() && String(currentUserId || "").startsWith("tg:")) {
         try {
-          const r = await apiJson("/api/invites/accept", { method: "POST", body: { token: pendingInviteToken } });
+          const r = await apiJson("/api/invites?action=accept", { method: "POST", body: { token: pendingInviteToken } });
           setPendingInviteToken(null);
           state = await loadState();
           location.hash = `#/group?id=${encodeURIComponent(r.groupId)}`;
