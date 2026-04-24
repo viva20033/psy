@@ -1878,13 +1878,17 @@ function renderGroup(state, groupId) {
 
         const onCreateInvite = async () => {
           try {
-            const r = await apiJson("/api/invites?action=create", { method: "POST", body: { groupId: g.id, role: "participant" } });
+            const useV2 = getUseV2();
+            const r = await apiJson(useV2 ? "/api/v2?action=invite_create" : "/api/invites?action=create", {
+              method: "POST",
+              body: { groupId: g.id, role: "participant" },
+            });
             const token = String(r.token || "");
-            const links = inviteLinksForToken(token);
+            const links = inviteLinksForToken(token, { isV2: useV2 });
             const link = links.tg || links.web;
             const el = document.getElementById(inviteOutId);
             if (el) el.value = link;
-            setPendingInviteToken(token);
+            setPendingInviteToken(formatPendingInviteToken(token, { isV2: useV2 }));
             const ok = await copyText(link);
             alert(
               ok
@@ -3531,25 +3535,46 @@ function loadPendingInviteToken() {
   return pendingInviteToken;
 }
 
-function inviteLinksForToken(token) {
+function parsePendingInvite(v) {
+  const raw = String(v || "").trim();
+  if (!raw) return { token: "", isV2: false };
+  if (raw.startsWith("v2:")) return { token: raw.slice(3).trim(), isV2: true };
+  return { token: raw, isV2: false };
+}
+
+function formatPendingInviteToken(token, { isV2 } = {}) {
+  const t = String(token || "").trim();
+  if (!t) return "";
+  return isV2 ? `v2:${t}` : t;
+}
+
+function inviteLinksForToken(token, { isV2 } = {}) {
   const t = String(token || "").trim();
   const base = location.origin + location.pathname;
-  const web = `${base}#/join?token=${encodeURIComponent(t)}`;
+  const web = `${base}#/join?token=${encodeURIComponent(t)}${isV2 ? "&v2=1" : ""}`;
   const bot = getBotUsername();
   // Telegram deep link: открывает чат с ботом, а внутри кнопка WebApp передаст start_param.
   // startapp поддерживается Telegram, а start_param будет доступен через initDataUnsafe.start_param.
-  const tg = bot ? `https://t.me/${encodeURIComponent(bot)}?startapp=${encodeURIComponent(`join_${t}`)}` : null;
+  const prefix = isV2 ? "joinv2_" : "join_";
+  const tg = bot ? `https://t.me/${encodeURIComponent(bot)}?startapp=${encodeURIComponent(`${prefix}${t}`)}` : null;
   return { web, tg };
 }
 
-function inviteTokenFromTelegramStartParam() {
+function inviteFromTelegramStartParam() {
   try {
     if (!isTelegramWebApp()) return null;
     const sp = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
     const raw = String(sp || "").trim();
     if (!raw) return null;
-    // ожидаем join_<token>
-    if (raw.startsWith("join_")) return raw.slice("join_".length).trim() || null;
+    // ожидаем join_<token> или joinv2_<token>
+    if (raw.startsWith("joinv2_")) {
+      const t = raw.slice("joinv2_".length).trim();
+      return t ? { token: t, isV2: true } : null;
+    }
+    if (raw.startsWith("join_")) {
+      const t = raw.slice("join_".length).trim();
+      return t ? { token: t, isV2: false } : null;
+    }
     return null;
   } catch {
     return null;
@@ -3601,8 +3626,12 @@ async function apiJson(endpoint, { method = "GET", body } = {}) {
 
 function renderJoin() {
   const { params } = parseHash();
-  const token = String(params.get("token") || pendingInviteToken || "").trim();
-  if (token) setPendingInviteToken(token);
+  const fromUrl = String(params.get("token") || "").trim();
+  const urlIsV2 = params.get("v2") === "1";
+  const pending = parsePendingInvite(pendingInviteToken);
+  const token = String(fromUrl || pending.token || "").trim();
+  const isV2 = urlIsV2 || pending.isV2;
+  if (token) setPendingInviteToken(formatPendingInviteToken(token, { isV2 }));
 
   const inTg = isTelegramWebAppContext();
   const loggedIn = Boolean(currentUserId);
@@ -3634,7 +3663,8 @@ function renderJoin() {
             disabled: canAccept ? null : true,
             onclick: async () => {
               try {
-          const r = await apiJson("/api/invites?action=accept", { method: "POST", body: { token } });
+                const endpoint = isV2 ? "/api/v2?action=invite_accept" : "/api/invites?action=accept";
+                const r = await apiJson(endpoint, { method: "POST", body: { token } });
                 setPendingInviteToken(null);
                 state = await loadState();
                 location.hash = `#/group?id=${encodeURIComponent(r.groupId)}`;
@@ -3736,8 +3766,8 @@ async function boot() {
     } catch {}
   }
   // Если открыто из Telegram с start_param — запомним токен приглашения.
-  const spToken = inviteTokenFromTelegramStartParam();
-  if (spToken) setPendingInviteToken(spToken);
+  const sp = inviteFromTelegramStartParam();
+  if (sp?.token) setPendingInviteToken(formatPendingInviteToken(sp.token, { isV2: sp.isV2 }));
   // 1) Если это Telegram WebApp — пробуем автологин
   if (isTelegramWebApp()) {
     await tryTelegramLogin();
@@ -3751,9 +3781,11 @@ async function boot() {
       profileLinkedEmail = mj.linkedEmail != null ? mj.linkedEmail : null;
       state = await loadState();
       // Если есть незавершённое приглашение и мы внутри Telegram — присоединим автоматически.
-      if (pendingInviteToken && isTelegramWebAppContext() && String(currentUserId || "").startsWith("tg:")) {
+      const pending = parsePendingInvite(pendingInviteToken);
+      if (pending.token && isTelegramWebAppContext() && String(currentUserId || "").startsWith("tg:")) {
         try {
-          const r = await apiJson("/api/invites?action=accept", { method: "POST", body: { token: pendingInviteToken } });
+          const endpoint = pending.isV2 ? "/api/v2?action=invite_accept" : "/api/invites?action=accept";
+          const r = await apiJson(endpoint, { method: "POST", body: { token: pending.token } });
           setPendingInviteToken(null);
           state = await loadState();
           location.hash = `#/group?id=${encodeURIComponent(r.groupId)}`;
