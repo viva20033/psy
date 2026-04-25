@@ -34,6 +34,7 @@ const v2Cache = {
 
 const adminCache = {
   overview: { loading: false, error: null, data: null },
+  people: { loading: false, error: null, data: null },
 };
 
 async function v2FetchJson(endpoint) {
@@ -118,6 +119,27 @@ function resetAdminOverview() {
   adminCache.overview.loading = false;
   adminCache.overview.error = null;
   adminCache.overview.data = null;
+}
+
+async function loadAdminPeople() {
+  if (adminCache.people.loading) return;
+  adminCache.people.loading = true;
+  adminCache.people.error = null;
+  try {
+    const j = await v2FetchJson("/api/admin?action=people_overview");
+    adminCache.people.data = j;
+  } catch (e) {
+    adminCache.people.error = String(e.message || e);
+    adminCache.people.data = null;
+  } finally {
+    adminCache.people.loading = false;
+  }
+}
+
+function resetAdminPeople() {
+  adminCache.people.loading = false;
+  adminCache.people.error = null;
+  adminCache.people.data = null;
 }
 
 async function refreshLinkedEmail() {
@@ -2528,6 +2550,7 @@ function renderAdmin() {
   const emailId = "adm_email";
   const fromId = "adm_from";
   const v2Id = "adm_v2";
+  const peopleSearchId = "adm_people_search";
   const outId = "adm_out";
 
   const setOut = (txt) => {
@@ -2550,6 +2573,9 @@ function renderAdmin() {
 
   if (!adminCache.overview.loading && adminCache.overview.data == null && adminCache.overview.error == null) {
     loadAdminOverview().then(() => renderApp());
+  }
+  if (!adminCache.people.loading && adminCache.people.data == null && adminCache.people.error == null) {
+    loadAdminPeople().then(() => renderApp());
   }
 
   const metric = (label, value, hint) =>
@@ -2588,6 +2614,133 @@ function renderAdmin() {
     ]);
   };
 
+  const adminPeopleCard = (() => {
+    const filterRaw = (() => {
+      try {
+        return localStorage.getItem("psy_admin_people_filter") || "";
+      } catch {
+        return "";
+      }
+    })();
+    const filter = filterRaw.trim().toLowerCase();
+
+    if (adminCache.people.loading) {
+      return h("div", { class: "card adminPanel" }, [h("div", { class: "sectionTitle" }, "Люди"), empty("Загрузка людей…")]);
+    }
+    if (adminCache.people.error) {
+      return h("div", { class: "card adminPanel" }, [
+        h("div", { class: "sectionTitle" }, "Люди"),
+        empty(`Ошибка: ${adminCache.people.error}`),
+        h("div", { class: "actions" }, [
+          h("button", { class: "btn", onclick: () => { resetAdminPeople(); renderApp(); } }, "Повторить"),
+        ]),
+      ]);
+    }
+
+    const data = adminCache.people.data || {};
+    const people = Array.isArray(data.people) ? data.people : [];
+    const contacts = Array.isArray(data.legacyContacts) ? data.legacyContacts : [];
+    const allRows = [...people, ...contacts];
+    const matches = (p) => {
+      if (!filter) return true;
+      const hay = [
+        p.id,
+        p.display_name,
+        p.tg_username,
+        p.email,
+        p.ownerUserId,
+        ...(Array.isArray(p.memberships) ? p.memberships.map((m) => m.group?.name || m.groupId || "") : []),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(filter);
+    };
+    const rows = allRows.filter(matches);
+
+    const personName = (p) => {
+      const name = p.display_name || p.tg_username || p.email || p.id;
+      const type = p.type === "legacy_contact" ? "контакт без входа" : "аккаунт";
+      return `${name} · ${type}`;
+    };
+    const rolesText = (p) => {
+      const l = p.roleCounts?.leader || 0;
+      const part = p.roleCounts?.participant || 0;
+      const chunks = [];
+      if (l) chunks.push(`ведёт: ${l}`);
+      if (part) chunks.push(`участвует: ${part}`);
+      return chunks.join(", ") || "нет ролей";
+    };
+    const groupsText = (p) =>
+      (p.memberships || [])
+        .slice(0, 4)
+        .map((m) => `${m.group?.name || m.groupId || "Группа"} (${m.role === "leader" ? "вед." : "уч."})`)
+        .join("; ") || "—";
+    const nextText = (p) =>
+      (p.nextBlocks || [])
+        .slice(0, 2)
+        .map((b) => `${formatDateRu(b.day)} ${formatTimeRange(b.start_time, b.end_time)} · ${b.group?.name || ""}`.trim())
+        .join("; ") || "—";
+
+    return h("div", { class: "card adminPanel" }, [
+      h("div", { class: "row" }, [
+        h("div", {}, [
+          h("div", { class: "sectionTitle" }, "Люди"),
+          h("div", { class: "groupName" }, "Пользователи и контакты"),
+          h(
+            "div",
+            { class: "small" },
+            `Аккаунтов: ${data.totals?.users ?? people.length}; контактов без входа: ${data.totals?.legacyContacts ?? contacts.length}; связей с группами: ${data.totals?.memberships ?? 0}.`
+          ),
+        ]),
+        h("div", { class: "actions adminHeroActions" }, [
+          h("button", { class: "btn", onclick: () => { resetAdminPeople(); renderApp(); } }, "Обновить"),
+          h("button", { class: "btn", onclick: () => setOut(JSON.stringify(data, null, 2)) }, "JSON"),
+        ]),
+      ]),
+      h("div", { class: "adminSearchRow" }, [
+        h("input", { id: peopleSearchId, placeholder: "Поиск: имя, tg:id, email, группа", value: filterRaw }),
+        h(
+          "button",
+          {
+            class: "btn primary",
+            onclick: () => {
+              try {
+                localStorage.setItem("psy_admin_people_filter", document.getElementById(peopleSearchId)?.value || "");
+              } catch {}
+              renderApp();
+            },
+          },
+          "Найти"
+        ),
+        h(
+          "button",
+          {
+            class: "btn",
+            onclick: () => {
+              try {
+                localStorage.removeItem("psy_admin_people_filter");
+              } catch {}
+              renderApp();
+            },
+          },
+          "Сброс"
+        ),
+      ]),
+      table(
+        [
+          { label: "Человек", render: (p) => personName(p) },
+          { label: "ID / email", render: (p) => [p.id, p.email].filter(Boolean).join(" · ") },
+          { label: "Роли", render: (p) => rolesText(p) },
+          { label: "Группы", render: (p) => groupsText(p) },
+          { label: "Ближайшее", render: (p) => nextText(p) },
+        ],
+        rows,
+        { empty: "Никого не найдено.", limit: 120 }
+      ),
+    ]);
+  })();
+
   const adminOverviewCard = (() => {
     if (adminCache.overview.loading) {
       return h("div", { class: "card adminPanel" }, [h("div", { class: "sectionTitle" }, "Обзор системы"), empty("Загрузка админки…")]);
@@ -2614,9 +2767,9 @@ function renderAdmin() {
     return h("div", { class: "adminDashboard" }, [
       h("div", { class: "card adminHero" }, [
         h("div", {}, [
-          h("div", { class: "sectionTitle" }, "Обзор системы"),
-          h("div", { class: "groupName" }, "Панель управления"),
-          h("div", { class: "small" }, "Здесь видно legacy app_state, новые v2 таблицы, участники, семинары, инвайты и быстрые проверки."),
+          h("div", { class: "sectionTitle" }, "Техраздел / миграция"),
+          h("div", { class: "groupName" }, "Состояние БД"),
+          h("div", { class: "small" }, "Техническая сводка legacy app_state и новых v2 таблиц. Нужна для миграции и диагностики."),
         ]),
         h("div", { class: "actions adminHeroActions" }, [
           h("button", { class: "btn", onclick: () => { resetAdminOverview(); renderApp(); } }, "Обновить"),
@@ -2723,6 +2876,7 @@ function renderAdmin() {
   return h("div", {}, [
     topbar("Админ", "Служебный раздел (пока базовый).", null),
     h("div", { class: "content adminContent" }, [
+      adminPeopleCard,
       adminOverviewCard,
       h("div", { class: "card" }, [
         h("div", { class: "sectionTitle" }, "Диагностика"),

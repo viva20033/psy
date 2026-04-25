@@ -162,6 +162,151 @@ export default async function handler(req, res) {
       });
     }
 
+    if (action === "people_overview") {
+      if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+
+      const usersRes = await supabase
+        .from("app_users")
+        .select("id,display_name,tg_username,created_at,updated_at")
+        .order("created_at", { ascending: false })
+        .limit(300);
+      if (usersRes.error) throw usersRes.error;
+
+      const accountsRes = await supabase.from("app_accounts").select("user_id,email,created_at").limit(500);
+      if (accountsRes.error) throw accountsRes.error;
+      const emailByUser = new Map((accountsRes.data || []).map((x) => [x.user_id, x.email]));
+
+      const membersRes = await supabase
+        .from("app_group_members")
+        .select("group_id,user_id,role,created_at,app_groups(id,name,type,color)")
+        .order("created_at", { ascending: false })
+        .limit(1000);
+      if (membersRes.error) throw membersRes.error;
+
+      const today = new Date();
+      const yyyy = today.getUTCFullYear();
+      const mm = String(today.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(today.getUTCDate()).padStart(2, "0");
+      const todayIso = `${yyyy}-${mm}-${dd}`;
+
+      const blocksRes = await supabase
+        .from("app_seminar_blocks")
+        .select("id,seminar_id,day,start_time,end_time,app_seminars(id,group_id,status,title,theme,app_groups(id,name,type,color))")
+        .gte("day", todayIso)
+        .order("day", { ascending: true })
+        .limit(500);
+      if (blocksRes.error) throw blocksRes.error;
+
+      const membershipsByUser = new Map();
+      for (const m of membersRes.data || []) {
+        const arr = membershipsByUser.get(m.user_id) || [];
+        arr.push({
+          groupId: m.group_id,
+          role: m.role,
+          group: m.app_groups || null,
+        });
+        membershipsByUser.set(m.user_id, arr);
+      }
+
+      const nextBlocksByGroup = new Map();
+      for (const b of blocksRes.data || []) {
+        const gid = b.app_seminars?.group_id;
+        if (!gid) continue;
+        const arr = nextBlocksByGroup.get(gid) || [];
+        if (arr.length < 5) {
+          arr.push({
+            id: b.id,
+            day: b.day,
+            start_time: b.start_time,
+            end_time: b.end_time,
+            seminarId: b.seminar_id,
+            seminar: b.app_seminars || null,
+          });
+        }
+        nextBlocksByGroup.set(gid, arr);
+      }
+
+      const people = (usersRes.data || []).map((u) => {
+        const memberships = membershipsByUser.get(u.id) || [];
+        const roleCounts = memberships.reduce(
+          (acc, m) => {
+            if (m.role === "leader") acc.leader += 1;
+            else acc.participant += 1;
+            return acc;
+          },
+          { leader: 0, participant: 0 }
+        );
+        const next = [];
+        for (const m of memberships) {
+          for (const b of nextBlocksByGroup.get(m.groupId) || []) {
+            next.push({ ...b, group: m.group, role: m.role });
+          }
+        }
+        next.sort((a, b) => String(a.day || "").localeCompare(String(b.day || "")));
+        return {
+          id: u.id,
+          type: "user",
+          display_name: u.display_name || "",
+          tg_username: u.tg_username || "",
+          email: emailByUser.get(u.id) || null,
+          created_at: u.created_at,
+          updated_at: u.updated_at,
+          roleCounts,
+          memberships,
+          nextBlocks: next.slice(0, 5),
+        };
+      });
+
+      // Legacy contacts without account, useful during migration.
+      const legacyRows = await supabase.from("app_state").select("id,state,updated_at").order("updated_at", { ascending: false }).limit(50);
+      if (legacyRows.error) throw legacyRows.error;
+      const contacts = [];
+      const seenContacts = new Set();
+      for (const row of legacyRows.data || []) {
+        const st = row.state || {};
+        const users = Array.isArray(st.users) ? st.users : [];
+        const members = Array.isArray(st.groupMembers) ? st.groupMembers : [];
+        const groups = Array.isArray(st.groups) ? st.groups : [];
+        for (const u of users) {
+          if (!u || !String(u.id || "").startsWith("u_")) continue;
+          const key = `${row.id}:${u.id}`;
+          if (seenContacts.has(key)) continue;
+          seenContacts.add(key);
+          const ms = members
+            .filter((m) => m && m.userId === u.id)
+            .map((m) => ({
+              groupId: m.groupId,
+              role: m.isLeader ? "leader" : "participant",
+              group: groups.find((g) => g && g.id === m.groupId) || null,
+            }));
+          contacts.push({
+            id: u.id,
+            type: "legacy_contact",
+            display_name: u.name || "",
+            ownerUserId: row.id,
+            updated_at: row.updated_at,
+            memberships: ms,
+            roleCounts: {
+              leader: ms.filter((m) => m.role === "leader").length,
+              participant: ms.filter((m) => m.role !== "leader").length,
+            },
+          });
+        }
+      }
+
+      return res.status(200).json({
+        ok: true,
+        people,
+        legacyContacts: contacts.slice(0, 300),
+        totals: {
+          users: people.length,
+          legacyContacts: contacts.length,
+          memberships: (membersRes.data || []).length,
+          upcomingBlocks: (blocksRes.data || []).length,
+        },
+      });
+    }
+
     if (action === "v2_import_leader") {
       if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 

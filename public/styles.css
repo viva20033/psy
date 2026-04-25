@@ -264,6 +264,16 @@ body{
 .adminPanel{
   min-width:0;
 }
+.adminSearchRow{
+  margin:14px 0 12px;
+  display:grid;
+  grid-template-columns:minmax(260px, 1fr) 140px 120px;
+  gap:10px;
+  align-items:center;
+}
+.adminSearchRow .btn{
+  min-height:44px;
+}
 .adminTableWrap{
   overflow:auto;
   border:1px solid var(--border);
