@@ -32,6 +32,10 @@ const v2Cache = {
   groupDetail: {}, // groupId -> { loading, error, data }
 };
 
+const adminCache = {
+  overview: { loading: false, error: null, data: null },
+};
+
 async function v2FetchJson(endpoint) {
   const r = await fetch(`${API_BASE}${endpoint}`);
   const txt = await r.text();
@@ -93,6 +97,27 @@ async function loadV2GroupDetail(groupId) {
   } catch (e) {
     v2Cache.groupDetail[gid] = { loading: false, error: String(e.message || e), data: null };
   }
+}
+
+async function loadAdminOverview() {
+  if (adminCache.overview.loading) return;
+  adminCache.overview.loading = true;
+  adminCache.overview.error = null;
+  try {
+    const j = await v2FetchJson("/api/admin?action=overview");
+    adminCache.overview.data = j;
+  } catch (e) {
+    adminCache.overview.error = String(e.message || e);
+    adminCache.overview.data = null;
+  } finally {
+    adminCache.overview.loading = false;
+  }
+}
+
+function resetAdminOverview() {
+  adminCache.overview.loading = false;
+  adminCache.overview.error = null;
+  adminCache.overview.data = null;
 }
 
 async function refreshLinkedEmail() {
@@ -2523,9 +2548,182 @@ function renderAdmin() {
     return j;
   };
 
+  if (!adminCache.overview.loading && adminCache.overview.data == null && adminCache.overview.error == null) {
+    loadAdminOverview().then(() => renderApp());
+  }
+
+  const metric = (label, value, hint) =>
+    h("div", { class: "adminMetric" }, [
+      h("div", { class: "adminMetricValue" }, value == null ? "—" : String(value)),
+      h("div", { class: "adminMetricLabel" }, label),
+      hint ? h("div", { class: "adminMetricHint" }, hint) : null,
+    ]);
+
+  const empty = (txt) => h("div", { class: "empty" }, txt);
+
+  const table = (columns, rows, opts = {}) => {
+    const visibleRows = Array.isArray(rows) ? rows.slice(0, opts.limit || 50) : [];
+    if (!visibleRows.length) return empty(opts.empty || "Нет данных.");
+    return h("div", { class: "adminTableWrap" }, [
+      h("table", { class: "adminTable" }, [
+        h("thead", {}, [
+          h(
+            "tr",
+            {},
+            columns.map((c) => h("th", {}, c.label))
+          ),
+        ]),
+        h(
+          "tbody",
+          {},
+          visibleRows.map((row) =>
+            h(
+              "tr",
+              {},
+              columns.map((c) => h("td", {}, c.render ? c.render(row) : String(row[c.key] ?? "")))
+            )
+          )
+        ),
+      ]),
+    ]);
+  };
+
+  const adminOverviewCard = (() => {
+    if (adminCache.overview.loading) {
+      return h("div", { class: "card adminPanel" }, [h("div", { class: "sectionTitle" }, "Обзор системы"), empty("Загрузка админки…")]);
+    }
+    if (adminCache.overview.error) {
+      return h("div", { class: "card adminPanel" }, [
+        h("div", { class: "sectionTitle" }, "Обзор системы"),
+        empty(`Ошибка: ${adminCache.overview.error}`),
+        h("div", { class: "actions" }, [
+          h("button", { class: "btn", onclick: () => { resetAdminOverview(); renderApp(); } }, "Повторить"),
+        ]),
+      ]);
+    }
+
+    const data = adminCache.overview.data || {};
+    const stats = data.stats || {};
+    const v2Stats = stats.v2 || {};
+    const v2 = data.v2 || {};
+    const legacy = Array.isArray(data.legacy) ? data.legacy : [];
+
+    const countOf = (x) => (x && typeof x === "object" ? x.count : x);
+    const errOf = (x) => (x && typeof x === "object" ? x.error : null);
+
+    return h("div", { class: "adminDashboard" }, [
+      h("div", { class: "card adminHero" }, [
+        h("div", {}, [
+          h("div", { class: "sectionTitle" }, "Обзор системы"),
+          h("div", { class: "groupName" }, "Панель управления"),
+          h("div", { class: "small" }, "Здесь видно legacy app_state, новые v2 таблицы, участники, семинары, инвайты и быстрые проверки."),
+        ]),
+        h("div", { class: "actions adminHeroActions" }, [
+          h("button", { class: "btn", onclick: () => { resetAdminOverview(); renderApp(); } }, "Обновить"),
+          h("button", { class: "btn", onclick: () => setOut(JSON.stringify(data, null, 2)) }, "JSON"),
+        ]),
+      ]),
+
+      h("div", { class: "adminMetrics" }, [
+        metric("Legacy кабинеты", legacy.length, "app_state"),
+        metric("v2 пользователи", countOf(v2Stats.users), errOf(v2Stats.users)),
+        metric("v2 группы", countOf(v2Stats.groups), errOf(v2Stats.groups)),
+        metric("v2 участники", countOf(v2Stats.members), errOf(v2Stats.members)),
+        metric("v2 семинары", countOf(v2Stats.seminars), errOf(v2Stats.seminars)),
+        metric("v2 дни", countOf(v2Stats.blocks), errOf(v2Stats.blocks)),
+        metric("v2 инвайты", countOf(v2Stats.invites), errOf(v2Stats.invites)),
+        metric("старые инвайты", countOf(v2Stats.legacyInvites), errOf(v2Stats.legacyInvites)),
+      ]),
+
+      h("div", { class: "adminGrid2" }, [
+        h("div", { class: "card adminPanel" }, [
+          h("div", { class: "sectionTitle" }, "Legacy app_state"),
+          table(
+            [
+              { label: "userId", render: (r) => r.id || "" },
+              { label: "Группы", render: (r) => String(r.counts?.groups ?? 0) },
+              { label: "Встречи", render: (r) => String(r.counts?.sessions ?? 0) },
+              { label: "Обновлено", render: (r) => String(r.updated_at || "").slice(0, 16).replace("T", " ") },
+            ],
+            legacy,
+            { empty: "Legacy-кабинетов нет." }
+          ),
+        ]),
+        h("div", { class: "card adminPanel" }, [
+          h("div", { class: "sectionTitle" }, "v2 группы"),
+          table(
+            [
+              { label: "Название", render: (r) => r.name || "Группа" },
+              { label: "Тип", render: (r) => r.type || "" },
+              { label: "Создал", render: (r) => r.created_by || "" },
+            ],
+            v2.groups || [],
+            { empty: "v2 групп пока нет." }
+          ),
+        ]),
+      ]),
+
+      h("div", { class: "card adminPanel" }, [
+        h("div", { class: "sectionTitle" }, "v2 участники"),
+        table(
+          [
+            { label: "Группа", render: (r) => r.app_groups?.name || r.group_id || "" },
+            { label: "Пользователь", render: (r) => r.app_users?.display_name || r.app_users?.tg_username || r.user_id || "" },
+            { label: "Роль", render: (r) => (r.role === "leader" ? "ведущий" : "участник") },
+          ],
+          v2.members || [],
+          { empty: "v2 участников пока нет.", limit: 80 }
+        ),
+      ]),
+
+      h("div", { class: "adminGrid2" }, [
+        h("div", { class: "card adminPanel" }, [
+          h("div", { class: "sectionTitle" }, "v2 семинары"),
+          table(
+            [
+              { label: "Группа", render: (r) => r.app_groups?.name || r.group_id || "" },
+              { label: "Статус", render: (r) => r.status || "" },
+              { label: "Тема", render: (r) => truncateText(r.theme || r.title || "Семинар", 60) },
+            ],
+            v2.seminars || [],
+            { empty: "v2 семинаров пока нет." }
+          ),
+        ]),
+        h("div", { class: "card adminPanel" }, [
+          h("div", { class: "sectionTitle" }, "v2 ближайшие дни"),
+          table(
+            [
+              { label: "Дата", render: (r) => formatDateRu(r.day) },
+              { label: "Время", render: (r) => formatTimeRange(r.start_time, r.end_time) },
+              { label: "Группа", render: (r) => r.app_seminars?.app_groups?.name || "" },
+            ],
+            v2.blocks || [],
+            { empty: "v2 дней пока нет." }
+          ),
+        ]),
+      ]),
+
+      h("div", { class: "card adminPanel" }, [
+        h("div", { class: "sectionTitle" }, "v2 приглашения"),
+        table(
+          [
+            { label: "Группа", render: (r) => r.app_groups?.name || r.group_id || "" },
+            { label: "Роль", render: (r) => (r.role === "leader" ? "ведущий" : "участник") },
+            { label: "Создал", render: (r) => r.created_by || "" },
+            { label: "Использовал", render: (r) => r.used_by || "—" },
+            { label: "Дата", render: (r) => String(r.created_at || "").slice(0, 16).replace("T", " ") },
+          ],
+          v2.invites || [],
+          { empty: "v2 приглашений пока нет." }
+        ),
+      ]),
+    ]);
+  })();
+
   return h("div", {}, [
     topbar("Админ", "Служебный раздел (пока базовый).", null),
-    h("div", { class: "content" }, [
+    h("div", { class: "content adminContent" }, [
+      adminOverviewCard,
       h("div", { class: "card" }, [
         h("div", { class: "sectionTitle" }, "Диагностика"),
         h("div", { class: "small" }, `userId: ${String(currentUserId || "—")}`),

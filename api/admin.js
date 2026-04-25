@@ -47,6 +47,17 @@ function migrateIdInState(state, fromId, toId) {
   return { changed };
 }
 
+function stateCounts(state) {
+  return state
+    ? {
+        users: Array.isArray(state.users) ? state.users.length : 0,
+        groups: Array.isArray(state.groups) ? state.groups.length : 0,
+        groupMembers: Array.isArray(state.groupMembers) ? state.groupMembers.length : 0,
+        sessions: Array.isArray(state.sessions) ? state.sessions.length : 0,
+      }
+    : { users: 0, groups: 0, groupMembers: 0, sessions: 0 };
+}
+
 export default async function handler(req, res) {
   try {
     const a = requireUserId(req);
@@ -57,6 +68,99 @@ export default async function handler(req, res) {
     if (!action) return res.status(400).json({ error: "action required" });
 
     const supabase = getSupabaseAdmin();
+
+    if (action === "overview") {
+      if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+
+      const legacyRows = await supabase
+        .from("app_state")
+        .select("id,updated_at,state")
+        .order("updated_at", { ascending: false })
+        .limit(25);
+      if (legacyRows.error) throw legacyRows.error;
+
+      const legacy = (legacyRows.data || []).map((row) => ({
+        id: row.id,
+        updated_at: row.updated_at,
+        counts: stateCounts(row.state),
+      }));
+
+      const countTable = async (table) => {
+        const r = await supabase.from(table).select("*", { count: "exact", head: true });
+        if (r.error) return { table, count: null, error: r.error.message || String(r.error) };
+        return { table, count: r.count || 0 };
+      };
+
+      const [usersCount, groupsCount, membersCount, seminarsCount, blocksCount, invitesCount, oldInvitesCount] = await Promise.all([
+        countTable("app_users"),
+        countTable("app_groups"),
+        countTable("app_group_members"),
+        countTable("app_seminars"),
+        countTable("app_seminar_blocks"),
+        countTable("app_group_invites"),
+        countTable("app_invites"),
+      ]);
+
+      const groups = await supabase
+        .from("app_groups")
+        .select("id,name,type,color,created_by,created_at,updated_at")
+        .order("updated_at", { ascending: false })
+        .limit(50);
+      if (groups.error) throw groups.error;
+
+      const members = await supabase
+        .from("app_group_members")
+        .select("group_id,user_id,role,created_at,app_groups(id,name),app_users(id,display_name,tg_username)")
+        .order("created_at", { ascending: false })
+        .limit(80);
+      if (members.error) throw members.error;
+
+      const seminars = await supabase
+        .from("app_seminars")
+        .select("id,group_id,status,title,theme,created_by,created_at,updated_at,app_groups(id,name)")
+        .order("created_at", { ascending: false })
+        .limit(50);
+      if (seminars.error) throw seminars.error;
+
+      const blocks = await supabase
+        .from("app_seminar_blocks")
+        .select("id,seminar_id,day,start_time,end_time,sort_order,app_seminars(id,group_id,title,app_groups(id,name))")
+        .order("day", { ascending: true })
+        .limit(80);
+      if (blocks.error) throw blocks.error;
+
+      const invites = await supabase
+        .from("app_group_invites")
+        .select("token,group_id,role,created_by,created_at,used_by,used_at,app_groups(id,name)")
+        .order("created_at", { ascending: false })
+        .limit(50);
+      if (invites.error) throw invites.error;
+
+      return res.status(200).json({
+        ok: true,
+        admin: { userId: a.userId },
+        legacy,
+        stats: {
+          legacyRows: legacy.length,
+          v2: {
+            users: usersCount,
+            groups: groupsCount,
+            members: membersCount,
+            seminars: seminarsCount,
+            blocks: blocksCount,
+            invites: invitesCount,
+            legacyInvites: oldInvitesCount,
+          },
+        },
+        v2: {
+          groups: groups.data || [],
+          members: members.data || [],
+          seminars: seminars.data || [],
+          blocks: blocks.data || [],
+          invites: invites.data || [],
+        },
+      });
+    }
 
     if (action === "v2_import_leader") {
       if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -205,14 +309,7 @@ export default async function handler(req, res) {
       if (!data) return res.status(404).json({ error: "not_found" });
 
       const state = data.state || null;
-      const counts = state
-        ? {
-            users: Array.isArray(state.users) ? state.users.length : 0,
-            groups: Array.isArray(state.groups) ? state.groups.length : 0,
-            groupMembers: Array.isArray(state.groupMembers) ? state.groupMembers.length : 0,
-            sessions: Array.isArray(state.sessions) ? state.sessions.length : 0,
-          }
-        : { users: 0, groups: 0, groupMembers: 0, sessions: 0 };
+      const counts = stateCounts(state);
 
       return res.status(200).json({ ok: true, row: { id: data.id, updated_at: data.updated_at }, counts, state });
     }
