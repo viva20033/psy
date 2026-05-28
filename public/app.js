@@ -1,4 +1,19 @@
 // SPA без сборки: hash-роутинг. Данные с сервера (SQLite); localStorage — запасной вариант.
+// PWA: включаем service worker в обычном браузере/установленном приложении.
+// В Telegram WebView лучше не вмешиваться в кэши (там своя специфика обновлений статики).
+(function registerPwaServiceWorker() {
+  try {
+    const isTelegram = Boolean(window.Telegram && window.Telegram.WebApp);
+    if (isTelegram) return;
+    if (!("serviceWorker" in navigator)) return;
+    window.addEventListener("load", () => {
+      navigator.serviceWorker
+        .register("/sw.js")
+        .catch((e) => console.warn("SW register failed:", e?.message || e));
+    });
+  } catch {}
+})();
+
 const STORAGE_KEY = "psy_cabinet_v1";
 const API_BASE = "";
 let currentUserId = null;
